@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "status-panel",
+  "description": "Capability for the macOS status panel",
+  "windows": ["status-panel"],
+  "platforms": ["macOS"],
+  "permissions": ["core:default"]
+}

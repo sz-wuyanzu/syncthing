@@ -59,11 +59,39 @@ dashboard. The app prevents a second desktop instance from starting.
 Desktop and Syncthing process logs are written to the app's operating-system
 log directory as `desktop.log` and `syncthing.log`.
 
+On macOS, click the tray icon to open a compact status panel with a native
+translucent material. It shows the sync state, transfer rates, and up to three
+active downloads, and provides controls to pause or resume syncing or open the
+full interface. Transfer details refresh less frequently than the summary to
+limit calls to Syncthing's more expensive file-need endpoint.
+
+For an externally managed Syncthing instance, the panel reads the GUI API key
+from the standard macOS configuration file (or `STCONFDIR`, `STHOMEDIR`, or
+`STGUIAPIKEY` when set for this app). If the key is unavailable, the full
+interface remains accessible and the panel explains why status is unavailable.
+
 Build an installer with:
 
 ```sh
 npm run build
 ```
+
+On Windows, build a per-user x64 NSIS installer with:
+
+```powershell
+npm run build:windows
+```
+
+The Windows installer installs for the current user and does not require
+administrator elevation. It is written to
+`src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/`.
+Syncthing configuration and data remain in `%LOCALAPPDATA%\Syncthing`, and
+desktop application logs remain in the Tauri application log directory.
+
+Uninstalling displays an opt-in prompt for deleting local Syncthing
+configuration, database, cache, and desktop application data. The local
+Syncthing configuration, database, and desktop application data can be
+removed, but synced folders outside those directories are never removed.
 
 The `prepare:syncthing` script downloads the matching official release archive,
 verifies its SHA-256 digest, and stages the executable and license under the

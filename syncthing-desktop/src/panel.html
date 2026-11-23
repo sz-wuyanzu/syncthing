@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <link rel="stylesheet" href="panel.css" />
+    <title>Syncthing 同步状态</title>
+    <script type="module" src="/panel.js" defer></script>
+  </head>
+  <body>
+    <main class="panel">
+      <header class="header">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">S</div>
+          <div>
+            <p class="eyebrow">SYNCTHING</p>
+            <h1>同步状态</h1>
+          </div>
+        </div>
+        <button class="icon-button" id="close" type="button" aria-label="关闭面板">×</button>
+      </header>
+
+      <section class="summary" aria-live="polite">
+        <div class="status-line">
+          <span class="status-dot" id="status-dot"></span>
+          <span id="state">正在连接 Syncthing…</span>
+        </div>
+        <div class="rates">
+          <div class="rate">
+            <span class="rate-label">↓ 下载速度</span>
+            <strong id="download-rate">—</strong>
+          </div>
+          <div class="rate">
+            <span class="rate-label">↑ 上传速度</span>
+            <strong id="upload-rate">—</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="activity">
+        <div class="section-heading">
+          <h2>正在下载</h2>
+          <span id="file-count" class="count">0</span>
+        </div>
+        <p id="empty-files" class="empty">暂无正在下载的文件</p>
+        <ul id="files" class="file-list"></ul>
+      </section>
+
+      <p class="error" id="error" role="alert" hidden></p>
+
+      <footer class="actions">
+        <button class="secondary-button" id="open-main" type="button">打开 Syncthing</button>
+        <button class="primary-button" id="toggle-sync" type="button" disabled>暂停同步</button>
+      </footer>
+    </main>
+  </body>
+</html>

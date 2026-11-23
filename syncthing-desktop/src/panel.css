@@ -1,0 +1,161 @@
+:root {
+  color: #f4f7f8;
+  font-family: Inter, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: dark light;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background: transparent;
+}
+
+.panel {
+  min-height: 100vh;
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 18px;
+  background: rgba(25, 32, 38, 0.58);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.3);
+}
+
+.header, .brand, .status-line, .section-heading, .file, .actions, .rates {
+  display: flex;
+  align-items: center;
+}
+
+.header, .section-heading, .file, .actions, .rates {
+  justify-content: space-between;
+}
+
+.brand { gap: 12px; }
+
+.brand-mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  place-items: center;
+  color: #fff;
+  background: #07867f;
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.eyebrow {
+  margin: 0 0 3px;
+  color: #b6c4c9;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+h1 { margin: 0; font-size: 18px; font-weight: 600; }
+
+.icon-button {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 9px;
+  color: #e4ebed;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 21px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.summary {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.status-line { gap: 9px; font-size: 14px; font-weight: 600; }
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #9aa8ad;
+  box-shadow: 0 0 10px rgba(154, 168, 173, 0.6);
+}
+
+.status-dot[data-state="syncing"] { background: #37c6a5; }
+.status-dot[data-state="scanning"] { background: #6cb6ff; }
+.status-dot[data-state="paused"], .status-dot[data-state="error"] { background: #f0ad4e; }
+
+.rates { gap: 12px; margin-top: 12px; }
+.rate { display: grid; gap: 4px; }
+.rate-label { color: #b6c4c9; font-size: 11px; }
+.rate strong { font-size: 14px; font-weight: 600; }
+
+.activity { margin-top: 16px; }
+.section-heading h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.count {
+  min-width: 21px;
+  padding: 3px 6px;
+  border-radius: 10px;
+  color: #dce5e7;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 10px;
+  text-align: center;
+}
+
+.empty { margin: 15px 0; color: #b6c4c9; font-size: 12px; }
+.file-list { display: grid; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+.file {
+  gap: 10px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.file-details { display: grid; min-width: 0; gap: 4px; }
+.file-name {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-name, .file-size { color: #b6c4c9; font-size: 10px; }
+.file-size { flex-shrink: 0; }
+.error { margin: 13px 0 0; color: #ffd2a0; font-size: 11px; line-height: 1.45; }
+.actions { gap: 8px; margin-top: 12px; }
+
+button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:disabled { opacity: 0.5; cursor: default; }
+.secondary-button { color: #f2f6f7; border-color: rgba(255, 255, 255, 0.16); background: rgba(255, 255, 255, 0.08); }
+.primary-button { color: white; background: #087f78; }
+.primary-button:hover:not(:disabled) { background: #07968d; }
+
+[hidden] { display: none !important; }
+
+@media (prefers-color-scheme: light) {
+  :root { color: #202b35; color-scheme: light; }
+  .panel { border-color: rgba(255, 255, 255, 0.72); background: rgba(242, 247, 248, 0.72); }
+  .eyebrow, .rate-label, .empty, .folder-name, .file-size { color: #53636b; }
+  .icon-button, .count, .file, .secondary-button { color: #26363d; background: rgba(30, 50, 58, 0.08); }
+  .secondary-button { border-color: rgba(30, 50, 58, 0.12); }
+  .summary { border-color: rgba(30, 50, 58, 0.1); background: rgba(255, 255, 255, 0.4); }
+  .error { color: #8a4312; }
+}
