@@ -1,13 +1,7 @@
-use std::{
-    env, fs,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
-
-const GUI_URL: &str = "http://127.0.0.1:8384";
 
 #[derive(Clone)]
 pub(crate) struct StatusClient {
@@ -48,17 +42,6 @@ struct ActiveFile {
     size: u64,
 }
 
-#[derive(Deserialize)]
-struct SyncthingConfig {
-    gui: GuiConfig,
-}
-
-#[derive(Deserialize)]
-struct GuiConfig {
-    #[serde(rename = "apikey")]
-    api_key: Option<String>,
-}
-
 impl StatusClient {
     pub(crate) fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
         Self {
@@ -72,9 +55,8 @@ impl StatusClient {
         }
     }
 
-    pub(crate) fn discover_external() -> Result<Self, String> {
-        let api_key = read_external_api_key()?;
-        Ok(Self::new(GUI_URL, api_key))
+    pub(crate) fn matches_target(&self, base_url: &str, api_key: &str) -> bool {
+        self.base_url == base_url.trim_end_matches('/') && self.api_key == api_key
     }
 
     pub(crate) fn fetch(&self) -> Result<SyncStatus, String> {
@@ -259,55 +241,6 @@ fn required_u64(value: &Value, name: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("Syncthing 返回的 {name} 字段无效"))
 }
 
-fn read_external_api_key() -> Result<String, String> {
-    if let Some(api_key) = env::var("STGUIAPIKEY")
-        .ok()
-        .filter(|key| !key.trim().is_empty())
-    {
-        return Ok(api_key);
-    }
-    let config_file = config_file_path()?;
-    let xml = fs::read_to_string(&config_file).map_err(|error| {
-        format!(
-            "无法读取 Syncthing 配置文件 {}：{error}",
-            config_file.display()
-        )
-    })?;
-    parse_api_key(&xml)
-}
-
-fn config_file_path() -> Result<PathBuf, String> {
-    if let Some(config_dir) = env::var_os("STCONFDIR").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(config_dir).join("config.xml"));
-    }
-    if let Some(home_dir) = env::var_os("STHOMEDIR").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(home_dir).join("config.xml"));
-    }
-
-    let home = env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or("无法确定 Syncthing 配置目录所在的用户主目录")?;
-    let candidates = [
-        home.join("Library/Application Support/Syncthing/config.xml"),
-        home.join(".config/syncthing/config.xml"),
-    ];
-    candidates
-        .iter()
-        .find(|path| path.is_file())
-        .cloned()
-        .ok_or_else(|| format!("未找到 Syncthing 配置文件：{}", candidates[0].display()))
-}
-
-fn parse_api_key(xml: &str) -> Result<String, String> {
-    let config: SyncthingConfig =
-        quick_xml::de::from_str(xml).map_err(|_| "无法解析 Syncthing 配置文件".to_string())?;
-    config
-        .gui
-        .api_key
-        .filter(|key| !key.trim().is_empty())
-        .ok_or_else(|| "Syncthing 配置中未找到 GUI API 密钥".into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,21 +249,6 @@ mod tests {
         net::TcpListener,
         thread,
     };
-
-    #[test]
-    fn parses_gui_api_key_without_exposing_it_in_errors() {
-        let config = r#"<configuration><gui><apikey>private-key</apikey></gui></configuration>"#;
-        assert_eq!(parse_api_key(config).unwrap(), "private-key");
-
-        let error = parse_api_key("<configuration><gui></configuration>").unwrap_err();
-        assert!(!error.contains("private-key"));
-    }
-
-    #[test]
-    fn rejects_config_without_gui_api_key() {
-        let error = parse_api_key("<configuration><gui></gui></configuration>").unwrap_err();
-        assert!(error.contains("未找到 GUI API 密钥"));
-    }
 
     #[test]
     fn transfer_rates_use_counter_deltas() {

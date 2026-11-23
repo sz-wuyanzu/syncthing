@@ -28,15 +28,20 @@ use tauri::{
 use tauri_plugin_dialog::DialogExt;
 use url::Url;
 
+mod status;
+
 const DEFAULT_GUI_URL: &str = "http://127.0.0.1:8384/";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PORT_ATTEMPTS: usize = 3;
 const API_TIMEOUT: Duration = Duration::from_secs(3);
+const STATUS_PANEL_WIDTH: f64 = 340.0;
+const STATUS_PANEL_HEIGHT: f64 = 410.0;
 
 #[derive(Clone, Default)]
 struct DesktopState {
     session: Arc<Mutex<DesktopSession>>,
     exiting: Arc<AtomicBool>,
+    status_client: Arc<Mutex<Option<Arc<status::StatusClient>>>>,
 }
 
 #[derive(Default)]
@@ -158,11 +163,74 @@ async fn connect_to_syncthing(
         .resource_dir()
         .map_err(|err| format!("Could not find the app resource directory: {err}"))?;
 
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         connect_to_syncthing_inner(session, log_dir, resource_dir)
     })
     .await
-    .map_err(|err| format!("Could not connect to Syncthing: {err}"))?
+    .map_err(|err| format!("Could not connect to Syncthing: {err}"))??;
+    *state
+        .status_client
+        .lock()
+        .map_err(|_| "Syncthing 状态数据不可用".to_string())? = None;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn get_sync_status(state: State<'_, DesktopState>) -> Result<status::SyncStatus, String> {
+    let client = status_client_for_state(state.inner())?;
+    tauri::async_runtime::spawn_blocking(move || client.fetch())
+        .await
+        .map_err(|error| format!("读取 Syncthing 同步状态失败：{error}"))?
+}
+
+#[tauri::command]
+async fn set_sync_paused(state: State<'_, DesktopState>, paused: bool) -> Result<(), String> {
+    let client = status_client_for_state(state.inner())?;
+    tauri::async_runtime::spawn_blocking(move || client.set_paused(paused))
+        .await
+        .map_err(|error| format!("更新 Syncthing 暂停状态失败：{error}"))?
+}
+
+fn status_client_for_state(state: &DesktopState) -> Result<Arc<status::StatusClient>, String> {
+    let connection = state
+        .session
+        .lock()
+        .map_err(|_| "Syncthing 会话状态不可用".to_string())?
+        .connection
+        .clone()
+        .ok_or_else(|| "Syncthing 尚未连接，无法读取同步状态".to_string())?;
+    let api_key = connection
+        .api_key
+        .or_else(config_api_key)
+        .ok_or_else(|| "未找到 Syncthing GUI API 密钥，请检查配置后重试".to_string())?;
+
+    let mut cached_client = state
+        .status_client
+        .lock()
+        .map_err(|_| "Syncthing 状态数据不可用".to_string())?;
+    if let Some(client) = cached_client.as_ref() {
+        if client.matches_target(&connection.gui_url, &api_key) {
+            return Ok(client.clone());
+        }
+    }
+
+    let client = Arc::new(status::StatusClient::new(&connection.gui_url, api_key));
+    *cached_client = Some(client.clone());
+    Ok(client)
+}
+
+#[tauri::command]
+fn open_main_window(app: AppHandle) {
+    show_window(&app);
+}
+
+#[tauri::command]
+fn hide_status_panel(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("status-panel") {
+        if let Err(error) = window.hide() {
+            eprintln!("Could not hide status panel: {error}");
+        }
+    }
 }
 
 fn connect_to_syncthing_inner(
@@ -1345,6 +1413,9 @@ fn toggle_status_panel(app: &AppHandle) {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+fn toggle_status_panel(_: &AppHandle) {}
+
 fn quit_app(app: &AppHandle) {
     let state = app.state::<DesktopState>();
     if state.exiting.swap(true, Ordering::SeqCst) {
@@ -1534,25 +1605,72 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::{WebviewUrl, webview::WebviewWindowBuilder};
+                use window_vibrancy::{
+                    NSVisualEffectMaterial, NSVisualEffectState, apply_vibrancy,
+                };
+
+                let panel = WebviewWindowBuilder::new(
+                    app,
+                    "status-panel",
+                    WebviewUrl::App("panel.html".into()),
+                )
+                .title("Syncthing 同步状态")
+                .inner_size(STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT)
+                .resizable(false)
+                .decorations(false)
+                .transparent(true)
+                .shadow(true)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .visible(false)
+                .build()?;
+                apply_vibrancy(
+                    &panel,
+                    NSVisualEffectMaterial::HudWindow,
+                    Some(NSVisualEffectState::Active),
+                    Some(12.0),
+                )?;
+                let panel_to_hide = panel.clone();
+                panel.on_window_event(move |event| {
+                    if let WindowEvent::Focused(false) = event {
+                        if let Err(error) = panel_to_hide.hide() {
+                            eprintln!("Could not hide status panel: {error}");
+                        }
+                    }
+                });
+            }
+
             let open = MenuItem::with_id(app, "open", "Open dashboard", true, None::<&str>)?;
             let pause = MenuItem::with_id(app, "pause", "Pause all folders", true, None::<&str>)?;
             let resume =
                 MenuItem::with_id(app, "resume", "Resume all folders", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit desktop app", true, None::<&str>)?;
+            #[cfg(target_os = "macos")]
+            let toggle_panel =
+                MenuItem::with_id(app, "toggle-panel", "显示/隐藏状态面板", true, None::<&str>)?;
+            #[cfg(target_os = "macos")]
+            let menu = Menu::with_items(app, &[&open, &pause, &resume, &toggle_panel, &quit])?;
+            #[cfg(not(target_os = "macos"))]
             let menu = Menu::with_items(app, &[&open, &pause, &resume, &quit])?;
             let icon = app
                 .default_window_icon()
                 .cloned()
                 .ok_or_else(|| std::io::Error::other("Syncthing window icon is missing"))?;
 
-            let tray = TrayIconBuilder::new()
-                .icon(icon)
+            let tray = TrayIconBuilder::new();
+            #[cfg(target_os = "macos")]
+            let tray = tray.show_menu_on_left_click(false);
+            tray.icon(icon)
                 .tooltip("Syncthing - click to open dashboard")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "open" => show_window(app),
                     "pause" => tray_set_all_folders(app, true),
                     "resume" => tray_set_all_folders(app, false),
+                    "toggle-panel" => toggle_status_panel(app),
                     "quit" => quit_app(app),
                     _ => {}
                 })
@@ -1563,6 +1681,9 @@ pub fn run() {
                         ..
                     } = event
                     {
+                        #[cfg(target_os = "macos")]
+                        toggle_status_panel(tray.app_handle());
+                        #[cfg(not(target_os = "macos"))]
                         show_window(tray.app_handle());
                     }
                 })
@@ -1592,6 +1713,10 @@ pub fn run() {
             remove_folder,
             restart_syncthing,
             scan_folder,
+            get_sync_status,
+            set_sync_paused,
+            open_main_window,
+            hide_status_panel,
             set_all_folders_paused,
             set_device_paused,
             set_folder_devices,
