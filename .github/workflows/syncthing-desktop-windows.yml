@@ -78,18 +78,22 @@ jobs:
           }
 
           $installLocation = (Get-ItemProperty $uninstallKey.PSPath).InstallLocation
-          $app = Get-ChildItem $installLocation -Filter "syncthing-desktop.exe" -File |
-            Select-Object -First 1
-          if (-not $app) {
+          $appPath = Join-Path $installLocation "syncthing-desktop.exe"
+          if (-not (Test-Path $appPath)) {
             throw "Installed Syncthing Desktop executable was not found"
           }
 
-          $process = Start-Process -FilePath $app.FullName -PassThru
+          $process = Start-Process -FilePath $appPath -PassThru
           Start-Sleep -Seconds 8
           if ($process.HasExited) {
             throw "Installed application exited during startup smoke test"
           }
           Stop-Process -Id $process.Id -Force
+
+          $bundledSyncthingPath = Join-Path $installLocation "syncthing.exe"
+          Get-Process -Name "syncthing" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -eq $bundledSyncthingPath } |
+            Stop-Process -Force
 
           $uninstallString = (Get-ItemProperty $uninstallKey.PSPath).UninstallString
           if ($uninstallString -match '^"([^"]+)"') {
@@ -101,7 +105,7 @@ jobs:
           }
           Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait
 
-          if (Test-Path $app.FullName) {
+          if (Test-Path $appPath) {
             throw "Application executable still exists after uninstall"
           }
 
