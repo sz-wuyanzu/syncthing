@@ -1,9 +1,15 @@
 # Syncthing Desktop
 
-Syncthing Desktop is a Tauri dashboard for a locally running Syncthing service.
-It can start Syncthing without opening a terminal or browser, shows device and
-folder status, and provides pause/resume controls. The full Syncthing web
-interface remains available in the system browser.
+Syncthing Desktop is a native control console for a locally running Syncthing
+service. It manages service start, stop, and restart; remote devices; synced
+folders; and common discovery, relay, NAT, and bandwidth settings without
+requiring the Syncthing web interface or a terminal.
+
+The dashboard can add devices and folders, select a local folder through the
+native directory picker, change folder sharing, pause or resume syncing, and
+request folder scans. Removing a folder removes only its Syncthing
+configuration; it does not delete the local directory or files. Stopping a
+Syncthing process started outside the desktop app requires confirmation.
 
 ## Requirements
 
@@ -38,9 +44,10 @@ key. It retries when the selected port becomes unavailable during startup. The
 generated key is used only for that managed process.
 
 Closing the window hides it in the system tray; syncing continues. The tray
-menu can reopen the dashboard, open the full web interface, pause or resume all
-folders, or **Quit and stop syncing**. The app prevents a second desktop
-instance from starting.
+menu can reopen the dashboard, pause or resume all folders, or quit the desktop
+app. Quitting stops a Syncthing process started by the app; an externally
+managed service is left running unless it is explicitly stopped in the
+dashboard. The app prevents a second desktop instance from starting.
 
 Desktop and Syncthing process logs are written to the app's operating-system
 log directory as `desktop.log` and `syncthing.log`.

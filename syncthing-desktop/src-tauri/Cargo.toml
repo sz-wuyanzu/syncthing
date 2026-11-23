@@ -19,7 +19,6 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
-tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 quick-xml = { version = "0.37", features = ["serialize"] }
 serde = { version = "1", features = ["derive"] }
@@ -27,6 +26,7 @@ serde_json = "1"
 ureq = "2"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
+tauri-plugin-dialog = "2.8.4"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "process"] }
