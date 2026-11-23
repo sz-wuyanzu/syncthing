@@ -49,6 +49,9 @@ jobs:
       - name: Build macOS installer
         run: npm run build
 
+      - name: Verify macOS app signature
+        run: codesign --verify --deep --strict --verbose=2 "src-tauri/target/release/bundle/macos/Syncthing Desktop.app"
+
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:

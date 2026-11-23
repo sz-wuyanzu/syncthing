@@ -57,9 +57,9 @@ ignored Tauri build directory. `npm run dev` and `npm run build` run this step
 automatically. Syncthing's data and configuration remain in the user's normal
 Syncthing directories.
 
-The macOS workflow currently produces an unsigned installer. Gatekeeper may
-require manually approving the app until it is signed and notarized with an
-Apple Developer ID.
+The macOS workflow ad-hoc signs the app bundle, but does not use a Developer ID
+or notarize it. Gatekeeper may require manually approving the app; seamless
+first launch requires Apple Developer ID signing and notarization.
 
 The `Build Syncthing Desktop (macOS)` GitHub Actions workflow runs for changes
 to this app on the `desktop` branch and can also be started manually. Download
