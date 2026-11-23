@@ -1,9 +1,9 @@
 # Syncthing Desktop
 
-Syncthing Desktop is a Tauri shell around Syncthing's existing web GUI. It starts
-the Syncthing process without opening a browser or terminal window, displays the
-existing management interface in a desktop window, and keeps running in the
-system tray when the window is closed.
+Syncthing Desktop is a Tauri dashboard for a locally running Syncthing service.
+It can start Syncthing without opening a terminal or browser, shows device and
+folder status, and provides pause/resume controls. The full Syncthing web
+interface remains available in the system browser.
 
 ## Requirements
 
@@ -24,12 +24,26 @@ npm install
 npm run dev
 ```
 
-The desktop shell binds the managed Syncthing GUI to `127.0.0.1:8384` and
-generates a private API key for its shutdown action. Closing the window hides it
-to the tray; choose **Quit and stop syncing** from the tray menu to stop the
-Syncthing process started by this app. If a Syncthing GUI is already running on
-that address, the app connects to it and leaves that externally managed process
-running when the desktop app exits.
+On startup, the app first looks for a reachable Syncthing GUI on the local
+machine. It checks `SYNCTHING_GUI_URL`, `STGUIADDRESS`, the discovered
+`config.xml`, and the default `127.0.0.1:8384` address. The GUI address must use
+localhost or a loopback IP; remote hosts are deliberately not accepted. The app
+reads the API key from `STGUIAPIKEY` or the local Syncthing configuration to
+show dashboard details. HTTPS connections use normal certificate validation;
+the app does not bypass certificate errors.
+
+If no existing GUI is found, the app starts Syncthing on the default GUI port
+when available, otherwise on a free local port, and generates a private API
+key. It retries when the selected port becomes unavailable during startup. The
+generated key is used only for that managed process.
+
+Closing the window hides it in the system tray; syncing continues. The tray
+menu can reopen the dashboard, open the full web interface, pause or resume all
+folders, or **Quit and stop syncing**. The app prevents a second desktop
+instance from starting.
+
+Desktop and Syncthing process logs are written to the app's operating-system
+log directory as `desktop.log` and `syncthing.log`.
 
 Build an installer with:
 

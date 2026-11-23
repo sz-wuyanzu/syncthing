@@ -1,29 +1,88 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
     <link rel="stylesheet" href="styles.css" />
-    <title>Syncthing</title>
+    <title>Syncthing 桌面看板</title>
     <script type="module" src="/main.js" defer></script>
   </head>
 
   <body>
-    <main class="splash">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true">S</div>
-        <div>
-          <p class="eyebrow">SYNCTHING DESKTOP</p>
-          <h1>Your files, everywhere.</h1>
+    <main class="dashboard">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">S</div>
+          <div>
+            <p class="eyebrow">SYNCTHING DESKTOP</p>
+            <h1>同步看板</h1>
+          </div>
         </div>
-      </div>
-      <p class="status" id="status" role="status" aria-live="polite">
-        Starting Syncthing…
-      </p>
-      <div class="loader" id="loader" aria-hidden="true"></div>
-      <p class="error" id="error" role="alert" hidden></p>
-      <button id="retry" type="button" hidden>Retry</button>
+        <div class="top-actions">
+          <span class="status-pill" id="service-status">正在连接</span>
+          <button class="button button-quiet" id="refresh" type="button" disabled>刷新</button>
+          <button class="button button-quiet" id="open-web" type="button" disabled>打开完整界面 ↗</button>
+        </div>
+      </header>
+
+      <section class="notice" id="notice" role="status" hidden></section>
+      <section class="error-card" id="error-card" role="alert" hidden>
+        <div>
+          <h2 id="error-title">无法连接 Syncthing</h2>
+          <p id="error-message"></p>
+        </div>
+        <button class="button" id="retry" type="button">重试</button>
+      </section>
+
+      <section class="overview" aria-label="同步概览">
+        <div class="overview-copy">
+          <p class="eyebrow">设备概览</p>
+          <h2 id="welcome">正在连接你的设备…</h2>
+          <p class="muted" id="device-id">Syncthing 服务启动后会显示设备信息。</p>
+        </div>
+        <div class="overview-actions">
+          <button class="button button-secondary" id="pause-all" type="button" disabled>暂停所有文件夹</button>
+          <button class="button" id="resume-all" type="button" disabled>恢复所有文件夹</button>
+        </div>
+      </section>
+
+      <section class="metrics" aria-label="同步统计">
+        <article class="metric-card">
+          <span class="metric-icon icon-devices" aria-hidden="true">↔</span>
+          <div><p>已连接设备</p><strong id="device-count">—</strong></div>
+        </article>
+        <article class="metric-card">
+          <span class="metric-icon icon-folders" aria-hidden="true">▰</span>
+          <div><p>共享文件夹</p><strong id="folder-count">—</strong></div>
+        </article>
+        <article class="metric-card">
+          <span class="metric-icon icon-version" aria-hidden="true">✓</span>
+          <div><p>Syncthing 版本</p><strong class="metric-version" id="version">—</strong></div>
+        </article>
+      </section>
+
+      <section class="folders-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">同步任务</p>
+            <h2>文件夹</h2>
+          </div>
+          <span class="muted" id="last-updated">等待状态数据</span>
+        </div>
+        <div class="folder-list" id="folders"></div>
+        <div class="empty-state" id="empty-state" hidden>
+          <div class="empty-icon" aria-hidden="true">▱</div>
+          <h3>还没有共享文件夹</h3>
+          <p>可以在完整 Syncthing 界面中添加或管理文件夹。</p>
+          <button class="button button-secondary" id="empty-open-web" type="button">打开完整界面</button>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <span id="service-url"></span>
+        <span>关闭窗口后，Syncthing 会继续在系统托盘运行。</span>
+      </footer>
     </main>
   </body>
 </html>
