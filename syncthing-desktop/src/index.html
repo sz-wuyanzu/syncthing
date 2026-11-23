@@ -1,29 +1,156 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
     <link rel="stylesheet" href="styles.css" />
-    <title>Syncthing</title>
+    <title>Syncthing 桌面看板</title>
     <script type="module" src="/main.js" defer></script>
   </head>
 
   <body>
-    <main class="splash">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true">S</div>
-        <div>
-          <p class="eyebrow">SYNCTHING DESKTOP</p>
-          <h1>Your files, everywhere.</h1>
+    <main class="dashboard">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">S</div>
+          <div>
+            <p class="eyebrow">SYNCTHING DESKTOP</p>
+            <h1>同步控制台</h1>
+          </div>
         </div>
-      </div>
-      <p class="status" id="status" role="status" aria-live="polite">
-        Starting Syncthing…
-      </p>
-      <div class="loader" id="loader" aria-hidden="true"></div>
-      <p class="error" id="error" role="alert" hidden></p>
-      <button id="retry" type="button" hidden>Retry</button>
+        <div class="top-actions">
+          <span class="status-pill is-offline" id="service-status">正在连接</span>
+          <button class="button button-quiet" id="refresh" type="button" disabled>刷新</button>
+          <button class="button button-secondary" id="restart-service" type="button" disabled>重启服务</button>
+          <button class="button" id="service-action" type="button" disabled>停止服务</button>
+        </div>
+      </header>
+
+      <nav class="tabs" aria-label="管理页面">
+        <button class="tab is-active" data-view="overview-view" type="button">概览</button>
+        <button class="tab" data-view="devices-view" type="button">设备</button>
+        <button class="tab" data-view="folders-view" type="button">文件夹</button>
+        <button class="tab" data-view="settings-view" type="button">网络设置</button>
+      </nav>
+
+      <section class="notice" id="notice" role="status" hidden></section>
+      <section class="error-card" id="error-card" role="alert" hidden>
+        <div>
+          <h2 id="error-title">无法连接 Syncthing</h2>
+          <p id="error-message"></p>
+        </div>
+        <button class="button" id="retry" type="button">连接 / 启动</button>
+      </section>
+
+      <section class="view" id="overview-view">
+        <section class="overview" aria-label="同步概览">
+          <div class="overview-copy">
+            <p class="eyebrow">服务状态</p>
+            <h2 id="welcome">正在连接你的设备…</h2>
+            <p class="muted" id="device-id">Syncthing 服务启动后会显示设备信息。</p>
+          </div>
+          <div class="overview-actions">
+            <button class="button button-secondary" id="pause-all" type="button" disabled>暂停所有文件夹</button>
+            <button class="button" id="resume-all" type="button" disabled>恢复所有文件夹</button>
+          </div>
+        </section>
+
+        <section class="metrics" aria-label="同步统计">
+          <article class="metric-card">
+            <span class="metric-icon icon-devices" aria-hidden="true">↔</span>
+            <div><p>已连接设备</p><strong id="device-count">—</strong></div>
+          </article>
+          <article class="metric-card">
+            <span class="metric-icon icon-folders" aria-hidden="true">▰</span>
+            <div><p>同步文件夹</p><strong id="folder-count">—</strong></div>
+          </article>
+          <article class="metric-card">
+            <span class="metric-icon icon-version" aria-hidden="true">✓</span>
+            <div><p>Syncthing 版本</p><strong class="metric-version" id="version">—</strong></div>
+          </article>
+        </section>
+
+        <section class="section">
+          <div class="section-heading">
+            <div><p class="eyebrow">同步任务</p><h2>文件夹状态</h2></div>
+            <span class="muted" id="last-updated">等待状态数据</span>
+          </div>
+          <div class="folder-list" id="overview-folders"></div>
+        </section>
+      </section>
+
+      <section class="view" id="devices-view" hidden>
+        <div class="section-heading">
+          <div><p class="eyebrow">远端节点</p><h2>设备管理</h2></div>
+        </div>
+        <form class="form-card" id="device-form">
+          <h3>添加设备</h3>
+          <div class="form-grid">
+            <label>设备 ID<input id="device-id-input" autocomplete="off" required placeholder="粘贴设备 ID" /></label>
+            <label>显示名称<input id="device-name-input" autocomplete="off" placeholder="例如：家庭 NAS" /></label>
+            <label class="form-wide">地址（每行一个，可留空使用动态发现）
+              <textarea id="device-addresses-input" rows="2" placeholder="dynamic&#10;tcp://192.168.1.20:22000"></textarea>
+            </label>
+          </div>
+          <div class="form-actions"><button class="button" type="submit">添加设备</button></div>
+        </form>
+        <div class="management-list" id="devices"></div>
+        <div class="empty-state" id="devices-empty" hidden><h3>还没有配置设备</h3><p>添加另一台 Syncthing 设备后，即可在此管理连接和共享。</p></div>
+      </section>
+
+      <section class="view" id="folders-view" hidden>
+        <div class="section-heading">
+          <div><p class="eyebrow">本机目录</p><h2>文件夹管理</h2></div>
+        </div>
+        <form class="form-card" id="folder-form">
+          <h3>添加文件夹</h3>
+          <div class="form-grid">
+            <label>文件夹 ID<input id="folder-id-input" autocomplete="off" required placeholder="例如：documents" /></label>
+            <label>显示名称<input id="folder-label-input" autocomplete="off" placeholder="例如：我的文档" /></label>
+            <label class="form-wide">本机目录
+              <span class="path-input">
+                <input id="folder-path-input" autocomplete="off" required placeholder="选择或输入本机目录路径" />
+                <button class="button button-secondary" id="choose-folder" type="button">选择…</button>
+              </span>
+            </label>
+            <fieldset class="form-wide device-picker">
+              <legend>共享给设备</legend>
+              <div id="folder-device-options" class="checkbox-list"></div>
+            </fieldset>
+          </div>
+          <p class="form-note">移除文件夹只会删除 Syncthing 配置，不会删除目录或其中的文件。</p>
+          <div class="form-actions"><button class="button" type="submit">添加文件夹</button></div>
+        </form>
+        <div class="management-list" id="folders"></div>
+        <div class="empty-state" id="folders-empty" hidden><h3>还没有同步文件夹</h3><p>选择本机目录并添加设备，即可开始同步。</p></div>
+      </section>
+
+      <section class="view" id="settings-view" hidden>
+        <div class="section-heading">
+          <div><p class="eyebrow">连接方式与带宽</p><h2>网络设置</h2></div>
+        </div>
+        <form class="form-card settings-card" id="settings-form">
+          <h3>连接与发现</h3>
+          <div class="toggle-list">
+            <label class="toggle-row"><span><strong>全局发现</strong><small>通过 Syncthing 公共发现服务器查找设备</small></span><input id="global-discovery" type="checkbox" /></label>
+            <label class="toggle-row"><span><strong>本地网络发现</strong><small>在同一局域网内自动查找设备</small></span><input id="local-discovery" type="checkbox" /></label>
+            <label class="toggle-row"><span><strong>中继连接</strong><small>直连不可用时允许通过中继传输</small></span><input id="relays" type="checkbox" /></label>
+            <label class="toggle-row"><span><strong>NAT 穿透</strong><small>尝试自动配置路由器端口映射</small></span><input id="nat" type="checkbox" /></label>
+          </div>
+          <div class="form-grid bandwidth-grid">
+            <label>最大发送速度（KB/s，0 表示不限）<input id="max-send" type="number" min="0" step="1" /></label>
+            <label>最大接收速度（KB/s，0 表示不限）<input id="max-recv" type="number" min="0" step="1" /></label>
+          </div>
+          <p class="form-note">GUI 的 HTTPS 与访问凭据属于安全设置；在证书信任流程完善前，不在此提供关闭 TLS 的快捷开关。</p>
+          <div class="form-actions"><button class="button" type="submit">保存网络设置</button></div>
+        </form>
+      </section>
+
+      <footer class="footer">
+        <span id="service-url"></span>
+        <span>关闭窗口后，看板和 Syncthing 会继续在系统托盘运行。</span>
+      </footer>
     </main>
   </body>
 </html>

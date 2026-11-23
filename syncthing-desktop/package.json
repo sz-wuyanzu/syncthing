@@ -4,8 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "prepare:syncthing": "node scripts/prepare-syncthing.js",
+    "predev": "npm run prepare:syncthing",
     "dev": "tauri dev",
+    "prebuild": "npm run prepare:syncthing",
     "build": "tauri build",
+    "build:windows": "npm run prepare:syncthing && tauri build --target x86_64-pc-windows-msvc --bundles nsis",
     "tauri": "tauri"
   },
   "devDependencies": {
