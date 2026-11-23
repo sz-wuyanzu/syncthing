@@ -420,7 +420,18 @@ pub fn run() {
         .manage(DesktopState::default())
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open Syncthing", true, None::<&str>)?;
+            #[cfg(target_os = "macos")]
+            let toggle_panel = MenuItem::with_id(
+                app,
+                "toggle-panel",
+                "Show/Hide Status Panel",
+                true,
+                None::<&str>,
+            )?;
             let quit = MenuItem::with_id(app, "quit", "Quit and stop syncing", true, None::<&str>)?;
+            #[cfg(target_os = "macos")]
+            let menu = Menu::with_items(app, &[&toggle_panel, &open, &quit])?;
+            #[cfg(not(target_os = "macos"))]
             let menu = Menu::with_items(app, &[&open, &quit])?;
             let icon = app
                 .default_window_icon()
@@ -447,6 +458,10 @@ pub fn run() {
                 });
             tray.on_menu_event(|app, event| match event.id().as_ref() {
                 "open" => show_window(app),
+                "toggle-panel" => {
+                    #[cfg(target_os = "macos")]
+                    toggle_status_panel(app);
+                }
                 "quit" => quit_app(app),
                 _ => {}
             })
