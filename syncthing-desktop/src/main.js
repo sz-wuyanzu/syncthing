@@ -25,6 +25,7 @@ const elements = {
   lastUpdated: document.querySelector("#last-updated"),
   serviceUrl: document.querySelector("#service-url"),
   refresh: document.querySelector("#refresh"),
+  fullManagement: document.querySelector("#full-management"),
   serviceAction: document.querySelector("#service-action"),
   restartService: document.querySelector("#restart-service"),
   pauseAll: document.querySelector("#pause-all"),
@@ -64,6 +65,7 @@ function setConnected(connected) {
   elements.status.classList.toggle("is-offline", !connected);
   elements.serviceAction.textContent = connected ? "停止服务" : "启动服务";
   elements.serviceAction.disabled = false;
+  elements.fullManagement.disabled = !connected;
   elements.restartService.disabled = !connected;
   elements.refresh.disabled = !connected;
   elements.refreshDiagnostics.disabled = !connected || !snapshot?.detailsAvailable;
@@ -622,6 +624,9 @@ async function loadNetworkSettings() {
 window.addEventListener("DOMContentLoaded", () => {
   elements.retry.addEventListener("click", connect);
   elements.refresh.addEventListener("click", refreshDashboard);
+  elements.fullManagement.addEventListener("click", () => runAction(async () => {
+    await invoke("open_full_management");
+  }));
   elements.serviceAction.addEventListener("click", stopService);
   elements.restartService.addEventListener("click", restartService);
   elements.pauseAll.addEventListener("click", () => setAllFoldersPaused(true));

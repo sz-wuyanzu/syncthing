@@ -217,6 +217,55 @@ async fn get_sync_status(state: State<'_, DesktopState>) -> Result<status::SyncS
 }
 
 #[tauri::command]
+fn open_full_management(app: AppHandle, state: State<'_, DesktopState>) -> Result<(), String> {
+    use tauri::{WebviewUrl, webview::WebviewWindowBuilder};
+
+    let gui_url = state
+        .session
+        .lock()
+        .map_err(|_| "Syncthing session state is unavailable".to_string())?
+        .connection
+        .as_ref()
+        .map(|connection| connection.gui_url.clone())
+        .ok_or_else(|| "Syncthing is not connected".to_string())?;
+    let url = local_management_url(&gui_url)?;
+
+    if let Some(window) = app.get_webview_window("syncthing-full-management") {
+        window
+            .show()
+            .map_err(|error| format!("Could not show Syncthing management: {error}"))?;
+        window
+            .set_focus()
+            .map_err(|error| format!("Could not focus Syncthing management: {error}"))?;
+        return Ok(());
+    }
+
+    WebviewWindowBuilder::new(&app, "syncthing-full-management", WebviewUrl::External(url))
+        .title("Syncthing 完整管理")
+        .inner_size(1280.0, 900.0)
+        .min_inner_size(800.0, 600.0)
+        .build()
+        .map(|_| ())
+        .map_err(|error| format!("Could not open Syncthing management: {error}"))
+}
+
+fn local_management_url(gui_url: &str) -> Result<Url, String> {
+    use std::net::IpAddr;
+
+    let url = Url::parse(gui_url).map_err(|error| format!("Invalid Syncthing GUI URL: {error}"))?;
+    let loopback = url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    });
+    if !matches!(url.scheme(), "http" | "https") || !loopback {
+        return Err("Full management is restricted to the local Syncthing GUI".into());
+    }
+    Ok(url)
+}
+
+#[tauri::command]
 async fn set_sync_paused(state: State<'_, DesktopState>, paused: bool) -> Result<(), String> {
     let client = status_client_for_state(state.inner())?;
     tauri::async_runtime::spawn_blocking(move || client.set_paused(paused))
@@ -1980,6 +2029,7 @@ pub fn run() {
             scan_folder,
             get_sync_status,
             set_sync_paused,
+            open_full_management,
             open_main_window,
             hide_status_panel,
             set_all_folders_paused,
@@ -2120,6 +2170,14 @@ mod tests {
         assert!(local_gui_url("192.0.2.10:8384", false).is_none());
         assert!(local_gui_url("http://user:password@127.0.0.1:8384", false).is_none());
         assert!(local_gui_url("/tmp/syncthing.sock", false).is_none());
+    }
+
+    #[test]
+    fn full_management_url_only_accepts_loopback_http() {
+        assert!(local_management_url("http://127.0.0.1:8384/").is_ok());
+        assert!(local_management_url("https://localhost:8384/").is_ok());
+        assert!(local_management_url("http://192.0.2.10:8384/").is_err());
+        assert!(local_management_url("file:///etc/passwd").is_err());
     }
 
     #[test]
