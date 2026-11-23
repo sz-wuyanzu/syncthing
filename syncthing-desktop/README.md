@@ -58,6 +58,23 @@ Build an installer with:
 npm run build
 ```
 
+On Windows, build a per-user x64 NSIS installer with:
+
+```powershell
+npm run build:windows
+```
+
+The Windows installer installs for the current user and does not require
+administrator elevation. It is written to
+`src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/`.
+Syncthing configuration and data remain in `%LOCALAPPDATA%\Syncthing`, and
+desktop application logs remain in the Tauri application log directory.
+
+Uninstalling displays an opt-in prompt for deleting local Syncthing
+configuration, database, cache, and desktop application data. The local
+Syncthing configuration, database, and desktop application data can be
+removed, but synced folders outside those directories are never removed.
+
 The `prepare:syncthing` script downloads the matching official release archive,
 verifies its SHA-256 digest, and stages the executable and license under the
 ignored Tauri build directory. `npm run dev` and `npm run build` run this step

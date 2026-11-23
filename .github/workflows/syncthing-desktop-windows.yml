@@ -1,0 +1,114 @@
+name: Build Syncthing Desktop (Windows)
+
+on:
+  push:
+    branches:
+      - desktop
+    paths:
+      - ".github/workflows/syncthing-desktop-windows.yml"
+      - "syncthing-desktop/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: syncthing-desktop-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Windows x64 installer
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: syncthing-desktop
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: syncthing-desktop/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Download and verify bundled Syncthing
+        run: npm run prepare:syncthing
+
+      - name: Test desktop backend
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+
+      - name: Build Windows x64 NSIS installer
+        run: npm run build:windows
+
+      - name: Verify NSIS installer
+        run: |
+          $installer = Get-ChildItem "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis" -Filter "*.exe" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $installer) {
+            throw "NSIS installer was not generated"
+          }
+          Get-Item $installer.FullName
+
+      - name: Smoke test install and uninstall
+        run: |
+          $installer = Get-ChildItem "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis" -Filter "*.exe" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+          Start-Process -FilePath $installer.FullName -ArgumentList "/S" -Wait
+
+          $uninstallKey = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" |
+            Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -eq "Syncthing Desktop" } |
+            Select-Object -First 1
+          if (-not $uninstallKey) {
+            throw "Per-user uninstall registration was not found"
+          }
+
+          $installLocation = (Get-ItemProperty $uninstallKey.PSPath).InstallLocation
+          $app = Get-ChildItem $installLocation -Filter "syncthing-desktop.exe" -File |
+            Select-Object -First 1
+          if (-not $app) {
+            throw "Installed Syncthing Desktop executable was not found"
+          }
+
+          $process = Start-Process -FilePath $app.FullName -PassThru
+          Start-Sleep -Seconds 8
+          if ($process.HasExited) {
+            throw "Installed application exited during startup smoke test"
+          }
+          Stop-Process -Id $process.Id -Force
+
+          $uninstallString = (Get-ItemProperty $uninstallKey.PSPath).UninstallString
+          if ($uninstallString -match '^"([^"]+)"') {
+            $uninstaller = $Matches[1]
+          } elseif ($uninstallString -match '^([^ ]+\.exe)') {
+            $uninstaller = $Matches[1]
+          } else {
+            throw "Could not determine the uninstaller executable"
+          }
+          Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait
+
+          if (Test-Path $app.FullName) {
+            throw "Application executable still exists after uninstall"
+          }
+
+      - name: Upload NSIS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Syncthing-Desktop-windows-x64
+          path: syncthing-desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 30
