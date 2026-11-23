@@ -144,7 +144,8 @@ try {
       const quotePowerShellPath = (value) => value.replaceAll("'", "''");
       const command = [
         "$ErrorActionPreference = 'Stop'",
-        `Expand-Archive -LiteralPath '${quotePowerShellPath(archivePath)}' -DestinationPath '${quotePowerShellPath(extractionDirectory)}' -Force`,
+        "Add-Type -AssemblyName System.IO.Compression.FileSystem",
+        `[System.IO.Compression.ZipFile]::ExtractToDirectory('${quotePowerShellPath(archivePath)}', '${quotePowerShellPath(extractionDirectory)}')`,
       ].join("; ");
       run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command]);
     } else {
