@@ -1104,6 +1104,86 @@ fn tray_set_all_folders(app: &AppHandle, paused: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        net::TcpListener,
+        sync::mpsc::{self, Receiver},
+    };
+
+    struct MockRequest {
+        line: String,
+        headers: String,
+        body: String,
+    }
+
+    fn mock_server(responses: Vec<String>) -> (String, Receiver<MockRequest>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sender, receiver) = mpsc::channel();
+
+        thread::spawn(move || {
+            for response_body in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let request_line = line.trim_end().to_string();
+                let mut headers = String::new();
+                let mut content_length = 0;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().unwrap_or_default();
+                        }
+                    }
+                    headers.push_str(&line);
+                }
+                let mut body = vec![0; content_length];
+                reader.read_exact(&mut body).unwrap();
+                sender
+                    .send(MockRequest {
+                        line: request_line,
+                        headers,
+                        body: String::from_utf8(body).unwrap(),
+                    })
+                    .unwrap();
+
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                )
+                .unwrap();
+            }
+        });
+
+        (format!("http://{address}/"), receiver)
+    }
+
+    fn mock_connection(gui_url: String) -> Connection {
+        Connection {
+            gui_url,
+            api_key: Some("test-api-key".into()),
+            device_id: "local-device".into(),
+            version: "v1.0.0".into(),
+            managed: true,
+        }
+    }
+
+    fn requests(receiver: Receiver<MockRequest>, count: usize) -> Vec<MockRequest> {
+        (0..count)
+            .map(|_| receiver.recv_timeout(Duration::from_secs(3)).unwrap())
+            .collect()
+    }
 
     #[test]
     fn local_gui_url_normalizes_wildcard_and_rejects_remote_hosts() {
@@ -1125,5 +1205,85 @@ mod tests {
         assert!(config.gui.tls);
         assert_eq!(config.gui.address, "127.0.0.1:9443");
         assert_eq!(config.gui.apikey, "secret");
+    }
+
+    #[test]
+    fn dashboard_refresh_reads_device_and_folder_status() {
+        let (gui_url, receiver) = mock_server(vec![
+            r#"{"device-a":{"connected":true},"device-b":{"connected":false}}"#.into(),
+            r#"[{"id":"docs","label":"Documents","paused":false}]"#.into(),
+            r#"{"state":"syncing","localFiles":9,"globalFiles":12,"needFiles":3,"needBytes":2048,"errors":1}"#.into(),
+        ]);
+
+        let snapshot = dashboard_snapshot(mock_connection(gui_url)).unwrap();
+
+        assert_eq!(snapshot.connected_devices, 1);
+        assert_eq!(snapshot.total_devices, 2);
+        assert_eq!(snapshot.folders.len(), 1);
+        assert_eq!(snapshot.folders[0].state, "syncing");
+        assert_eq!(snapshot.folders[0].need_files, 3);
+        assert_eq!(snapshot.folders[0].need_bytes, 2048);
+        assert_eq!(snapshot.folders[0].errors, 1);
+        let requests = requests(receiver, 3);
+        assert!(
+            requests[0]
+                .line
+                .starts_with("GET /rest/system/connections ")
+        );
+        assert!(requests[1].line.starts_with("GET /rest/config/folders "));
+        assert!(
+            requests[2]
+                .line
+                .starts_with("GET /rest/db/status?folder=docs ")
+        );
+        assert!(
+            requests[0]
+                .headers
+                .to_ascii_lowercase()
+                .contains("x-api-key: test-api-key")
+        );
+    }
+
+    #[test]
+    fn pause_all_updates_every_folder() {
+        let (gui_url, receiver) = mock_server(vec![
+            r#"[{"id":"photos"},{"id":"docs"}]"#.into(),
+            "{}".into(),
+            "{}".into(),
+        ]);
+
+        set_all_folders_paused_inner(&mock_connection(gui_url), true).unwrap();
+
+        let requests = requests(receiver, 3);
+        assert!(requests[0].line.starts_with("GET /rest/config/folders "));
+        assert!(
+            requests[1]
+                .line
+                .starts_with("PATCH /rest/config/folders/photos ")
+        );
+        assert!(
+            requests[2]
+                .line
+                .starts_with("PATCH /rest/config/folders/docs ")
+        );
+        assert_eq!(requests[1].body, r#"{"paused":true}"#);
+        assert_eq!(requests[2].body, r#"{"paused":true}"#);
+    }
+
+    #[test]
+    fn individual_folder_can_be_resumed() {
+        let (gui_url, receiver) = mock_server(vec!["{}".into()]);
+
+        patch_folder(&mock_connection(gui_url), "docs", false).unwrap();
+
+        let request = requests(receiver, 1).pop().unwrap();
+        assert!(request.line.starts_with("PATCH /rest/config/folders/docs "));
+        assert_eq!(request.body, r#"{"paused":false}"#);
+        assert!(
+            request
+                .headers
+                .to_ascii_lowercase()
+                .contains("x-api-key: test-api-key")
+        );
     }
 }
