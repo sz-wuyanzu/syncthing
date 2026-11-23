@@ -124,15 +124,22 @@ async fn connect_to_syncthing(
         .path()
         .app_log_dir()
         .map_err(|err| format!("Could not find the app log directory: {err}"))?;
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|err| format!("Could not find the app resource directory: {err}"))?;
 
-    tauri::async_runtime::spawn_blocking(move || connect_to_syncthing_inner(session, log_dir))
-        .await
-        .map_err(|err| format!("Could not connect to Syncthing: {err}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        connect_to_syncthing_inner(session, log_dir, resource_dir)
+    })
+    .await
+    .map_err(|err| format!("Could not connect to Syncthing: {err}"))?
 }
 
 fn connect_to_syncthing_inner(
     session: Arc<Mutex<DesktopSession>>,
     log_dir: PathBuf,
+    resource_dir: PathBuf,
 ) -> Result<ConnectionView, String> {
     let existing = {
         let mut state = session
@@ -172,10 +179,10 @@ fn connect_to_syncthing_inner(
         } else if probe_connection(&connection).is_some() {
             Ok(connection_view(&connection))
         } else {
-            connect_or_start(session.clone(), log_dir)
+            connect_or_start(session.clone(), log_dir, resource_dir)
         }
     } else {
-        connect_or_start(session.clone(), log_dir)
+        connect_or_start(session.clone(), log_dir, resource_dir)
     };
 
     if let Ok(mut state) = session.lock() {
@@ -187,6 +194,7 @@ fn connect_to_syncthing_inner(
 fn connect_or_start(
     session: Arc<Mutex<DesktopSession>>,
     log_dir: PathBuf,
+    resource_dir: PathBuf,
 ) -> Result<ConnectionView, String> {
     for candidate in gui_candidates() {
         let mut connection = Connection {
@@ -210,7 +218,7 @@ fn connect_or_start(
     for _ in 0..MAX_PORT_ATTEMPTS {
         let port = available_local_port()?;
         let connection = start_managed_syncthing(port);
-        let child = spawn_managed_process(port, &connection, &log_dir)?;
+        let child = spawn_managed_process(port, &connection, &log_dir, &resource_dir)?;
         {
             let mut state = session
                 .lock()
@@ -263,6 +271,7 @@ fn spawn_managed_process(
     port: u16,
     connection: &Connection,
     log_dir: &Path,
+    resource_dir: &Path,
 ) -> Result<Child, String> {
     fs::create_dir_all(log_dir).map_err(|err| {
         format!(
@@ -279,7 +288,7 @@ fn spawn_managed_process(
         .try_clone()
         .map_err(|err| format!("Could not prepare desktop log: {err}"))?;
     let syncthing_log = log_dir.join("syncthing.log");
-    let mut command = Command::new(syncthing_binary());
+    let mut command = Command::new(syncthing_binary(resource_dir));
     command
         .arg("--no-browser")
         .env("STGUIADDRESS", format!("127.0.0.1:{port}"))
@@ -300,9 +309,11 @@ fn spawn_managed_process(
         .env("STHIDECONSOLE", "true")
         .creation_flags(0x08000000);
 
-    command
-        .spawn()
-        .map_err(|err| format!("Could not start Syncthing. Install it or set SYNCTHING_BIN: {err}"))
+    command.spawn().map_err(|err| {
+        format!(
+            "Could not start Syncthing. Set SYNCTHING_BIN to override the bundled executable: {err}"
+        )
+    })
 }
 
 fn wait_for_managed_syncthing(
@@ -764,8 +775,12 @@ fn available_local_port() -> Result<u16, String> {
         .map_err(|err| format!("Could not determine local GUI port: {err}"))
 }
 
-fn syncthing_binary() -> std::ffi::OsString {
+fn syncthing_binary(resource_dir: &Path) -> std::ffi::OsString {
     if let Some(binary) = env::var_os("SYNCTHING_BIN") {
+        return binary;
+    }
+
+    if let Some(binary) = bundled_syncthing_binary(resource_dir) {
         return binary;
     }
 
@@ -796,6 +811,18 @@ fn syncthing_binary() -> std::ffi::OsString {
         .find(|path| path.is_file())
         .map(PathBuf::into_os_string)
         .unwrap_or_else(|| "syncthing".into())
+}
+
+fn bundled_syncthing_binary(resource_dir: &Path) -> Option<std::ffi::OsString> {
+    let bundled_directory = resource_dir.join("target/bundled-resources");
+    #[cfg(windows)]
+    let bundled_name = "syncthing.exe";
+    #[cfg(not(windows))]
+    let bundled_name = "syncthing";
+    let bundled_binary = bundled_directory.join(bundled_name);
+    bundled_binary
+        .is_file()
+        .then(|| bundled_binary.into_os_string())
 }
 
 fn show_window(app: &AppHandle) {
@@ -1194,6 +1221,27 @@ mod tests {
         assert!(local_gui_url("192.0.2.10:8384", false).is_none());
         assert!(local_gui_url("http://user:password@127.0.0.1:8384", false).is_none());
         assert!(local_gui_url("/tmp/syncthing.sock", false).is_none());
+    }
+
+    #[test]
+    fn resolves_bundled_syncthing_from_tauri_resources() {
+        let resource_dir =
+            env::temp_dir().join(format!("syncthing-desktop-test-{}", uuid::Uuid::new_v4()));
+        let bundled_directory = resource_dir.join("target/bundled-resources");
+        #[cfg(windows)]
+        let executable_name = "syncthing.exe";
+        #[cfg(not(windows))]
+        let executable_name = "syncthing";
+        let executable_path = bundled_directory.join(executable_name);
+        fs::create_dir_all(&bundled_directory).unwrap();
+        fs::write(&executable_path, b"test executable").unwrap();
+
+        assert_eq!(
+            bundled_syncthing_binary(&resource_dir).map(PathBuf::from),
+            Some(executable_path)
+        );
+
+        fs::remove_dir_all(resource_dir).unwrap();
     }
 
     #[test]

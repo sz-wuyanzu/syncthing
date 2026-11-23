@@ -10,10 +10,10 @@ interface remains available in the system browser.
 - Node.js and npm
 - Rust and the platform prerequisites listed in the
   [Tauri setup guide](https://tauri.app/start/prerequisites/)
-- Syncthing installed on the system
 
-The app checks common installation paths and then `PATH`. Set `SYNCTHING_BIN`
-to the executable path if Syncthing is installed elsewhere.
+The app bundles the official [Syncthing v2.1.7](https://github.com/syncthing/syncthing/releases/tag/v2.1.7)
+executable for the build platform. Set `SYNCTHING_BIN` only if you want to
+override the bundled version.
 
 ## Development
 
@@ -51,8 +51,15 @@ Build an installer with:
 npm run build
 ```
 
-Installers currently expect Syncthing to be installed separately; bundling the
-Syncthing executable is not configured yet.
+The `prepare:syncthing` script downloads the matching official release archive,
+verifies its SHA-256 digest, and stages the executable and license under the
+ignored Tauri build directory. `npm run dev` and `npm run build` run this step
+automatically. Syncthing's data and configuration remain in the user's normal
+Syncthing directories.
+
+The macOS workflow currently produces an unsigned installer. Gatekeeper may
+require manually approving the app until it is signed and notarized with an
+Apple Developer ID.
 
 The `Build Syncthing Desktop (macOS)` GitHub Actions workflow runs for changes
 to this app on the `desktop` branch and can also be started manually. Download

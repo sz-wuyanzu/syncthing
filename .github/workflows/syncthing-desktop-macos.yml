@@ -40,6 +40,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Download and verify bundled Syncthing
+        run: npm run prepare:syncthing
+
       - name: Test desktop backend
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
