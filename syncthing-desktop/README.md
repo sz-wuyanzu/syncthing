@@ -53,3 +53,8 @@ npm run build
 
 Installers currently expect Syncthing to be installed separately; bundling the
 Syncthing executable is not configured yet.
+
+The `Build Syncthing Desktop (macOS)` GitHub Actions workflow runs for changes
+to this app on the `desktop` branch and can also be started manually. Download
+the generated DMG from the run's **Artifacts** section; artifacts are retained
+for 30 days.
