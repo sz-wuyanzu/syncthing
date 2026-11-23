@@ -12,15 +12,31 @@ use std::{
 use std::os::windows::process::CommandExt;
 
 use tauri::{
+    AppHandle, Manager, State, WindowEvent,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, State, WindowEvent,
 };
 
+#[cfg(target_os = "macos")]
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
+
+#[cfg(target_os = "macos")]
+mod status;
+
 const GUI_URL: &str = "http://127.0.0.1:8384/";
+#[cfg(target_os = "macos")]
+const STATUS_PANEL_WIDTH: f64 = 340.0;
+#[cfg(target_os = "macos")]
+const STATUS_PANEL_HEIGHT: f64 = 410.0;
 
 #[derive(Clone, Default)]
-struct DesktopState(Arc<Mutex<Option<ManagedDaemon>>>);
+struct DesktopState {
+    processes: Arc<Mutex<Option<ManagedDaemon>>>,
+    #[cfg(target_os = "macos")]
+    status_client: Arc<Mutex<Option<Arc<status::StatusClient>>>>,
+    #[cfg(target_os = "macos")]
+    status_error: Arc<Mutex<Option<String>>>,
+}
 
 struct ManagedDaemon {
     child: Child,
@@ -33,10 +49,107 @@ struct ManagedDaemon {
 
 #[tauri::command]
 async fn connect_to_syncthing(state: State<'_, DesktopState>) -> Result<String, String> {
-    let processes = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || connect_to_syncthing_inner(processes))
+    let processes = state.processes.clone();
+    #[cfg(target_os = "macos")]
+    let status_client = state.status_client.clone();
+    #[cfg(target_os = "macos")]
+    let status_error = state.status_error.clone();
+    let result =
+        tauri::async_runtime::spawn_blocking(move || connect_to_syncthing_inner(processes))
+            .await
+            .map_err(|err| format!("Could not start Syncthing: {err}"))??;
+
+    #[cfg(target_os = "macos")]
+    {
+        let managed_api = state
+            .processes
+            .lock()
+            .map_err(|_| "Syncthing process state is unavailable".to_string())?
+            .as_ref()
+            .map(|daemon| status::StatusClient::new(&daemon.gui_url, &daemon.api_key));
+        let discovered_api = match managed_api {
+            Some(client) => Ok(client),
+            None => status::StatusClient::discover_external(),
+        };
+        match discovered_api {
+            Ok(client) => {
+                *status_client
+                    .lock()
+                    .map_err(|_| "Syncthing status state is unavailable".to_string())? =
+                    Some(Arc::new(client));
+                *status_error
+                    .lock()
+                    .map_err(|_| "Syncthing status state is unavailable".to_string())? = None;
+            }
+            Err(error) => {
+                *status_client
+                    .lock()
+                    .map_err(|_| "Syncthing status state is unavailable".to_string())? = None;
+                *status_error
+                    .lock()
+                    .map_err(|_| "Syncthing status state is unavailable".to_string())? =
+                    Some(error);
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn get_sync_status(state: State<'_, DesktopState>) -> Result<status::SyncStatus, String> {
+    let client = state
+        .status_client
+        .lock()
+        .map_err(|_| "Syncthing status state is unavailable".to_string())?
+        .clone();
+    let client = match client {
+        Some(client) => client,
+        None => {
+            return Err(state
+                .status_error
+                .lock()
+                .map_err(|_| "Syncthing status state is unavailable".to_string())?
+                .clone()
+                .unwrap_or_else(|| "Syncthing status is not connected yet".into()));
+        }
+    };
+    tauri::async_runtime::spawn_blocking(move || client.fetch())
         .await
-        .map_err(|err| format!("Could not start Syncthing: {err}"))?
+        .map_err(|error| format!("Could not retrieve Syncthing status: {error}"))?
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn set_sync_paused(state: State<'_, DesktopState>, paused: bool) -> Result<(), String> {
+    let client = state
+        .status_client
+        .lock()
+        .map_err(|_| "Syncthing status state is unavailable".to_string())?
+        .clone()
+        .ok_or_else(|| {
+            "Syncthing status is unavailable; open the full interface to manage syncing".to_string()
+        })?;
+    tauri::async_runtime::spawn_blocking(move || client.set_paused(paused))
+        .await
+        .map_err(|error| format!("Could not update Syncthing pause state: {error}"))?
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn open_main_window(app: AppHandle) {
+    show_window(&app);
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn hide_status_panel(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("status-panel") {
+        if let Err(error) = window.hide() {
+            eprintln!("Could not hide status panel: {error}");
+        }
+    }
 }
 
 fn connect_to_syncthing_inner(
@@ -140,9 +253,7 @@ fn syncthing_binary() -> std::ffi::OsString {
         .unwrap_or_else(|| "syncthing".into())
 }
 
-fn wait_for_managed_syncthing(
-    managed: &mut Option<ManagedDaemon>,
-) -> Result<String, String> {
+fn wait_for_managed_syncthing(managed: &mut Option<ManagedDaemon>) -> Result<String, String> {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let daemon = managed
@@ -158,7 +269,9 @@ fn wait_for_managed_syncthing(
             .map_err(|err| format!("Could not inspect Syncthing process: {err}"))?
         {
             *managed = None;
-            return Err(format!("Syncthing exited before its GUI became ready ({status})"));
+            return Err(format!(
+                "Syncthing exited before its GUI became ready ({status})"
+            ));
         }
         if Instant::now() >= deadline {
             return Err("Timed out waiting for Syncthing's GUI at 127.0.0.1:8384".into());
@@ -195,9 +308,47 @@ fn show_window(app: &AppHandle) {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn toggle_status_panel(app: &AppHandle) {
+    use tauri::PhysicalPosition;
+
+    let Some(window) = app.get_webview_window("status-panel") else {
+        return;
+    };
+    match window.is_visible() {
+        Ok(true) => {
+            if let Err(error) = window.hide() {
+                eprintln!("Could not hide status panel: {error}");
+            }
+        }
+        Ok(false) => {
+            match window.primary_monitor() {
+                Ok(Some(monitor)) => {
+                    let scale = monitor.scale_factor();
+                    let position = monitor.position();
+                    let size = monitor.size();
+                    let x = position.x + size.width as i32 - (STATUS_PANEL_WIDTH * scale) as i32;
+                    let y = position.y + (28.0 * scale) as i32;
+                    if let Err(error) = window.set_position(PhysicalPosition::new(x, y)) {
+                        eprintln!("Could not position status panel: {error}");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!("Could not find a monitor for status panel: {error}"),
+            }
+            if let Err(error) = window.show() {
+                eprintln!("Could not show status panel: {error}");
+            } else if let Err(error) = window.set_focus() {
+                eprintln!("Could not focus status panel: {error}");
+            }
+        }
+        Err(error) => eprintln!("Could not inspect status panel visibility: {error}"),
+    }
+}
+
 fn quit_app(app: &AppHandle) {
     let app = app.clone();
-    let processes = app.state::<DesktopState>().0.clone();
+    let processes = app.state::<DesktopState>().processes.clone();
     thread::spawn(move || {
         if let Err(err) = stop_managed_syncthing(processes) {
             if let Some(window) = app.get_webview_window("main") {
@@ -216,9 +367,7 @@ fn quit_app(app: &AppHandle) {
     });
 }
 
-fn stop_managed_syncthing(
-    processes: Arc<Mutex<Option<ManagedDaemon>>>,
-) -> Result<(), String> {
+fn stop_managed_syncthing(processes: Arc<Mutex<Option<ManagedDaemon>>>) -> Result<(), String> {
     let mut managed = processes
         .lock()
         .map_err(|_| "Syncthing process state is unavailable".to_string())?;
@@ -227,8 +376,9 @@ fn stop_managed_syncthing(
     };
 
     if !daemon.gui_ready {
-        return Err("Syncthing's GUI was not verified; refusing an unverified shutdown request"
-            .into());
+        return Err(
+            "Syncthing's GUI was not verified; refusing an unverified shutdown request".into(),
+        );
     }
 
     if daemon
@@ -266,28 +416,79 @@ fn stop_managed_syncthing(
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(DesktopState::default())
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open Syncthing", true, None::<&str>)?;
-            let quit =
-                MenuItem::with_id(app, "quit", "Quit and stop syncing", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit and stop syncing", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
             let icon = app
                 .default_window_icon()
                 .cloned()
                 .ok_or("Syncthing window icon is missing")?;
 
-            TrayIconBuilder::new()
+            let tray = TrayIconBuilder::new()
                 .icon(icon)
                 .tooltip("Syncthing")
-                .menu(&menu)
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    "open" => show_window(app),
-                    "quit" => quit_app(app),
-                    _ => {}
-                })
-                .build(app)?;
+                .menu(&menu);
+            #[cfg(target_os = "macos")]
+            let tray = tray
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        #[cfg(target_os = "macos")]
+                        toggle_status_panel(tray.app_handle());
+                    }
+                });
+            tray.on_menu_event(|app, event| match event.id().as_ref() {
+                "open" => show_window(app),
+                "quit" => quit_app(app),
+                _ => {}
+            })
+            .build(app)?;
+
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::{WebviewUrl, webview::WebviewWindowBuilder};
+                use window_vibrancy::{
+                    NSVisualEffectMaterial, NSVisualEffectState, apply_vibrancy,
+                };
+
+                let panel = WebviewWindowBuilder::new(
+                    app,
+                    "status-panel",
+                    WebviewUrl::App("panel.html".into()),
+                )
+                .title("Syncthing Status")
+                .inner_size(STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT)
+                .resizable(false)
+                .decorations(false)
+                .transparent(true)
+                .shadow(true)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .visible(false)
+                .build()?;
+                apply_vibrancy(
+                    &panel,
+                    NSVisualEffectMaterial::HudWindow,
+                    Some(NSVisualEffectState::Active),
+                    Some(12.0),
+                )?;
+                let panel_to_hide = panel.clone();
+                panel.on_window_event(move |event| {
+                    if let WindowEvent::Focused(false) = event {
+                        if let Err(error) = panel_to_hide.hide() {
+                            eprintln!("Could not hide status panel: {error}");
+                        }
+                    }
+                });
+            }
 
             if let Some(window) = app.get_webview_window("main") {
                 let window_to_hide = window.clone();
@@ -301,8 +502,18 @@ pub fn run() {
                 });
             }
             Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![connect_to_syncthing])
+        });
+    #[cfg(target_os = "macos")]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        connect_to_syncthing,
+        get_sync_status,
+        set_sync_paused,
+        open_main_window,
+        hide_status_panel
+    ]);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.invoke_handler(tauri::generate_handler![connect_to_syncthing]);
+    builder
         .run(tauri::generate_context!())
         .expect("error while running Syncthing Desktop");
 }

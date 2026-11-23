@@ -31,6 +31,17 @@ Syncthing process started by this app. If a Syncthing GUI is already running on
 that address, the app connects to it and leaves that externally managed process
 running when the desktop app exits.
 
+On macOS, click the tray icon to open a compact status panel with a native
+translucent material. It shows the sync state, transfer rates, and up to three
+active downloads, and provides controls to pause or resume syncing or open the
+full interface. Transfer details refresh less frequently than the summary to
+limit calls to Syncthing's more expensive file-need endpoint.
+
+For an externally managed Syncthing instance, the panel reads the GUI API key
+from the standard macOS configuration file (or `STCONFDIR`, `STHOMEDIR`, or
+`STGUIAPIKEY` when set for this app). If the key is unavailable, the full
+interface remains accessible and the panel explains why status is unavailable.
+
 Build an installer with:
 
 ```sh
