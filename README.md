@@ -80,6 +80,10 @@ a release or checking out git, you just need to run `go run build.go` and the
 binaries are created in `./bin`. There's [a guide][5] with more details on the
 build process.
 
+An optional Tauri desktop shell is available in the
+[`syncthing-desktop`](syncthing-desktop/README.md) directory. It wraps the
+existing Web GUI and requires a separately installed Syncthing binary.
+
 ## Signed Releases
 
 Release binaries are GPG signed with the key available from
