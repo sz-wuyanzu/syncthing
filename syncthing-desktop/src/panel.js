@@ -10,18 +10,18 @@ const errorElement = document.querySelector("#error");
 const toggleSyncButton = document.querySelector("#toggle-sync");
 
 const stateLabels = {
-  syncing: "Syncing",
-  scanning: "Scanning",
-  idle: "Up to date",
-  paused: "Paused",
-  "no-folders": "No folders configured",
+  syncing: "正在同步",
+  scanning: "正在扫描",
+  idle: "已同步",
+  paused: "已暂停",
+  "no-folders": "尚未配置同步文件夹",
 };
 
 let latestStatus;
 let refreshInProgress = false;
 
 function formatRate(bytesPerSecond) {
-  const units = ["B/s", "KB/s", "MB/s", "GB/s"];
+  const units = ["B/秒", "KB/秒", "MB/秒", "GB/秒"];
   let value = bytesPerSecond;
   let unit = 0;
   while (value >= 1024 && unit < units.length - 1) {
@@ -71,11 +71,11 @@ function renderFiles(files) {
 
 function render(status) {
   latestStatus = status;
-  stateElement.textContent = stateLabels[status.state] ?? status.state;
+  stateElement.textContent = stateLabels[status.state] ?? `同步状态：${status.state}`;
   dotElement.dataset.state = status.state;
   downloadRateElement.textContent = formatRate(status.downloadRate);
   uploadRateElement.textContent = formatRate(status.uploadRate);
-  toggleSyncButton.textContent = status.paused ? "Resume syncing" : "Pause syncing";
+  toggleSyncButton.textContent = status.paused ? "继续同步" : "暂停同步";
   toggleSyncButton.disabled = false;
   renderFiles(status.activeFiles);
   errorElement.hidden = true;
@@ -87,7 +87,7 @@ async function refresh() {
   try {
     render(await invoke("get_sync_status"));
   } catch (error) {
-    stateElement.textContent = "Status unavailable";
+    stateElement.textContent = "同步状态暂不可用";
     dotElement.dataset.state = "error";
     downloadRateElement.textContent = "—";
     uploadRateElement.textContent = "—";

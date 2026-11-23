@@ -81,7 +81,7 @@ impl StatusClient {
         let connections = self.get_json("/rest/system/connections", &[])?;
         let totals = connections
             .get("total")
-            .ok_or("Syncthing returned no connection totals")?;
+            .ok_or("Syncthing 未返回连接统计信息")?;
         let received = required_u64(totals, "inBytesTotal")?;
         let sent = required_u64(totals, "outBytesTotal")?;
         let (download_rate, upload_rate) = self.rates(received, sent)?;
@@ -89,7 +89,7 @@ impl StatusClient {
         let devices = self.get_json("/rest/config/devices", &[])?;
         let devices = devices
             .as_array()
-            .ok_or("Syncthing returned an invalid device list")?;
+            .ok_or("Syncthing 返回的设备列表格式无效")?;
         let paused = !devices.is_empty()
             && devices
                 .iter()
@@ -98,7 +98,7 @@ impl StatusClient {
         let folders = self.get_json("/rest/config/folders", &[])?;
         let folders = folders
             .as_array()
-            .ok_or("Syncthing returned an invalid folder list")?;
+            .ok_or("Syncthing 返回的文件夹列表格式无效")?;
         let mut has_scanning = false;
         let mut has_syncing = false;
         let mut folders_to_check = Vec::with_capacity(folders.len());
@@ -108,7 +108,7 @@ impl StatusClient {
                 .get("id")
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty())
-                .ok_or("Syncthing returned a folder without an ID")?;
+                .ok_or("Syncthing 返回的文件夹缺少 ID")?;
             let label = folder
                 .get("label")
                 .and_then(Value::as_str)
@@ -122,7 +122,7 @@ impl StatusClient {
                 Some("scanning") => has_scanning = true,
                 Some("syncing") => has_syncing = true,
                 Some(_) => {}
-                None => return Err("Syncthing returned a folder without a state".into()),
+                None => return Err("Syncthing 返回的文件夹缺少同步状态".into()),
             }
         }
         let active_files = self.active_files(&folders_to_check)?;
@@ -149,13 +149,17 @@ impl StatusClient {
     }
 
     pub(crate) fn set_paused(&self, paused: bool) -> Result<(), String> {
-        let action = if paused { "pause" } else { "resume" };
+        let (action, action_label) = if paused {
+            ("pause", "暂停")
+        } else {
+            ("resume", "恢复")
+        };
         let url = format!("{}/rest/system/{action}", self.base_url);
         self.agent
             .post(&url)
             .set("X-API-Key", &self.api_key)
             .call()
-            .map_err(|error| format!("Could not {action} Syncthing: {error}"))?;
+            .map_err(|error| format!("{action_label} Syncthing 失败：{error}"))?;
         Ok(())
     }
 
@@ -167,19 +171,19 @@ impl StatusClient {
         }
         let response = request
             .call()
-            .map_err(|error| format!("Could not read Syncthing status: {error}"))?;
+            .map_err(|error| format!("读取 Syncthing 同步状态失败：{error}"))?;
         let body = response
             .into_string()
-            .map_err(|error| format!("Could not read Syncthing response: {error}"))?;
+            .map_err(|error| format!("读取 Syncthing 响应失败：{error}"))?;
         serde_json::from_str(&body)
-            .map_err(|error| format!("Syncthing returned invalid status data: {error}"))
+            .map_err(|error| format!("Syncthing 返回的同步状态数据无效：{error}"))
     }
 
     fn rates(&self, received: u64, sent: u64) -> Result<(u64, u64), String> {
         let mut sample = self
             .rate_sample
             .lock()
-            .map_err(|_| "Syncthing rate state is unavailable".to_string())?;
+            .map_err(|_| "Syncthing 传输速率状态不可用".to_string())?;
         let now = Instant::now();
         let rates = sample
             .map(|previous| calculate_rates(previous, received, sent, now))
@@ -197,7 +201,7 @@ impl StatusClient {
         if let Some(sample) = self
             .active_file_sample
             .lock()
-            .map_err(|_| "Syncthing transfer state is unavailable".to_string())?
+            .map_err(|_| "Syncthing 下载状态不可用".to_string())?
             .as_ref()
             .filter(|sample| now.duration_since(sample.at) < Duration::from_secs(15))
         {
@@ -213,12 +217,12 @@ impl StatusClient {
             let progress = needed
                 .get("progress")
                 .and_then(Value::as_array)
-                .ok_or("Syncthing returned an invalid transfer list")?;
+                .ok_or("Syncthing 返回的下载列表格式无效")?;
             for file in progress.iter().take(3usize.saturating_sub(files.len())) {
                 let name = file
                     .get("name")
                     .and_then(Value::as_str)
-                    .ok_or("Syncthing returned an active file without a name")?;
+                    .ok_or("Syncthing 返回的下载项缺少文件名")?;
                 files.push(ActiveFile {
                     folder: label.clone(),
                     name: name.to_string(),
@@ -232,11 +236,10 @@ impl StatusClient {
         *self
             .active_file_sample
             .lock()
-            .map_err(|_| "Syncthing transfer state is unavailable".to_string())? =
-            Some(ActiveFileSample {
-                files: files.clone(),
-                at: now,
-            });
+            .map_err(|_| "Syncthing 下载状态不可用".to_string())? = Some(ActiveFileSample {
+            files: files.clone(),
+            at: now,
+        });
         Ok(files)
     }
 }
@@ -253,7 +256,7 @@ fn required_u64(value: &Value, name: &str) -> Result<u64, String> {
     value
         .get(name)
         .and_then(Value::as_u64)
-        .ok_or_else(|| format!("Syncthing returned an invalid {name} value"))
+        .ok_or_else(|| format!("Syncthing 返回的 {name} 字段无效"))
 }
 
 fn read_external_api_key() -> Result<String, String> {
@@ -266,7 +269,7 @@ fn read_external_api_key() -> Result<String, String> {
     let config_file = config_file_path()?;
     let xml = fs::read_to_string(&config_file).map_err(|error| {
         format!(
-            "Could not read Syncthing configuration at {}: {error}",
+            "无法读取 Syncthing 配置文件 {}：{error}",
             config_file.display()
         )
     })?;
@@ -283,7 +286,7 @@ fn config_file_path() -> Result<PathBuf, String> {
 
     let home = env::var_os("HOME")
         .map(PathBuf::from)
-        .ok_or("Could not determine the home directory for Syncthing configuration")?;
+        .ok_or("无法确定 Syncthing 配置目录所在的用户主目录")?;
     let candidates = [
         home.join("Library/Application Support/Syncthing/config.xml"),
         home.join(".config/syncthing/config.xml"),
@@ -292,22 +295,17 @@ fn config_file_path() -> Result<PathBuf, String> {
         .iter()
         .find(|path| path.is_file())
         .cloned()
-        .ok_or_else(|| {
-            format!(
-                "Could not find Syncthing configuration at {}",
-                candidates[0].display()
-            )
-        })
+        .ok_or_else(|| format!("未找到 Syncthing 配置文件：{}", candidates[0].display()))
 }
 
 fn parse_api_key(xml: &str) -> Result<String, String> {
-    let config: SyncthingConfig = quick_xml::de::from_str(xml)
-        .map_err(|_| "Could not parse the Syncthing configuration".to_string())?;
+    let config: SyncthingConfig =
+        quick_xml::de::from_str(xml).map_err(|_| "无法解析 Syncthing 配置文件".to_string())?;
     config
         .gui
         .api_key
         .filter(|key| !key.trim().is_empty())
-        .ok_or_else(|| "Syncthing configuration does not contain a GUI API key".into())
+        .ok_or_else(|| "Syncthing 配置中未找到 GUI API 密钥".into())
 }
 
 #[cfg(test)]
@@ -331,7 +329,7 @@ mod tests {
     #[test]
     fn rejects_config_without_gui_api_key() {
         let error = parse_api_key("<configuration><gui></gui></configuration>").unwrap_err();
-        assert!(error.contains("does not contain a GUI API key"));
+        assert!(error.contains("未找到 GUI API 密钥"));
     }
 
     #[test]

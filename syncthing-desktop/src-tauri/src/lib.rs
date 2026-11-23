@@ -64,7 +64,7 @@ async fn connect_to_syncthing(state: State<'_, DesktopState>) -> Result<String, 
         let managed_api = state
             .processes
             .lock()
-            .map_err(|_| "Syncthing process state is unavailable".to_string())?
+            .map_err(|_| "Syncthing 进程状态不可用".to_string())?
             .as_ref()
             .map(|daemon| status::StatusClient::new(&daemon.gui_url, &daemon.api_key));
         let discovered_api = match managed_api {
@@ -75,20 +75,18 @@ async fn connect_to_syncthing(state: State<'_, DesktopState>) -> Result<String, 
             Ok(client) => {
                 *status_client
                     .lock()
-                    .map_err(|_| "Syncthing status state is unavailable".to_string())? =
-                    Some(Arc::new(client));
+                    .map_err(|_| "Syncthing 状态数据不可用".to_string())? = Some(Arc::new(client));
                 *status_error
                     .lock()
-                    .map_err(|_| "Syncthing status state is unavailable".to_string())? = None;
+                    .map_err(|_| "Syncthing 状态数据不可用".to_string())? = None;
             }
             Err(error) => {
                 *status_client
                     .lock()
-                    .map_err(|_| "Syncthing status state is unavailable".to_string())? = None;
+                    .map_err(|_| "Syncthing 状态数据不可用".to_string())? = None;
                 *status_error
                     .lock()
-                    .map_err(|_| "Syncthing status state is unavailable".to_string())? =
-                    Some(error);
+                    .map_err(|_| "Syncthing 状态数据不可用".to_string())? = Some(error);
             }
         }
     }
@@ -102,7 +100,7 @@ async fn get_sync_status(state: State<'_, DesktopState>) -> Result<status::SyncS
     let client = state
         .status_client
         .lock()
-        .map_err(|_| "Syncthing status state is unavailable".to_string())?
+        .map_err(|_| "Syncthing 状态数据不可用".to_string())?
         .clone();
     let client = match client {
         Some(client) => client,
@@ -110,14 +108,14 @@ async fn get_sync_status(state: State<'_, DesktopState>) -> Result<status::SyncS
             return Err(state
                 .status_error
                 .lock()
-                .map_err(|_| "Syncthing status state is unavailable".to_string())?
+                .map_err(|_| "Syncthing 状态数据不可用".to_string())?
                 .clone()
-                .unwrap_or_else(|| "Syncthing status is not connected yet".into()));
+                .unwrap_or_else(|| "Syncthing 尚未连接，暂时无法读取同步状态".into()));
         }
     };
     tauri::async_runtime::spawn_blocking(move || client.fetch())
         .await
-        .map_err(|error| format!("Could not retrieve Syncthing status: {error}"))?
+        .map_err(|error| format!("读取 Syncthing 同步状态失败：{error}"))?
 }
 
 #[cfg(target_os = "macos")]
@@ -126,14 +124,12 @@ async fn set_sync_paused(state: State<'_, DesktopState>, paused: bool) -> Result
     let client = state
         .status_client
         .lock()
-        .map_err(|_| "Syncthing status state is unavailable".to_string())?
+        .map_err(|_| "Syncthing 状态数据不可用".to_string())?
         .clone()
-        .ok_or_else(|| {
-            "Syncthing status is unavailable; open the full interface to manage syncing".to_string()
-        })?;
+        .ok_or_else(|| "同步状态不可用，请打开 Syncthing 主界面管理同步".to_string())?;
     tauri::async_runtime::spawn_blocking(move || client.set_paused(paused))
         .await
-        .map_err(|error| format!("Could not update Syncthing pause state: {error}"))?
+        .map_err(|error| format!("更新 Syncthing 暂停状态失败：{error}"))?
 }
 
 #[cfg(target_os = "macos")]
@@ -419,15 +415,16 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .manage(DesktopState::default())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            let open = MenuItem::with_id(app, "open", "打开 Syncthing", true, None::<&str>)?;
+            #[cfg(not(target_os = "macos"))]
             let open = MenuItem::with_id(app, "open", "Open Syncthing", true, None::<&str>)?;
             #[cfg(target_os = "macos")]
-            let toggle_panel = MenuItem::with_id(
-                app,
-                "toggle-panel",
-                "Show/Hide Status Panel",
-                true,
-                None::<&str>,
-            )?;
+            let toggle_panel =
+                MenuItem::with_id(app, "toggle-panel", "显示/隐藏状态面板", true, None::<&str>)?;
+            #[cfg(target_os = "macos")]
+            let quit = MenuItem::with_id(app, "quit", "退出并停止同步", true, None::<&str>)?;
+            #[cfg(not(target_os = "macos"))]
             let quit = MenuItem::with_id(app, "quit", "Quit and stop syncing", true, None::<&str>)?;
             #[cfg(target_os = "macos")]
             let menu = Menu::with_items(app, &[&toggle_panel, &open, &quit])?;
@@ -479,7 +476,7 @@ pub fn run() {
                     "status-panel",
                     WebviewUrl::App("panel.html".into()),
                 )
-                .title("Syncthing Status")
+                .title("Syncthing 同步状态")
                 .inner_size(STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT)
                 .resizable(false)
                 .decorations(false)
