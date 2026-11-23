@@ -83,16 +83,19 @@ h1 { margin-bottom: 0; font-size: 20px; letter-spacing: -.025em; }
 .overview .button:hover:not(:disabled) { background: rgba(255,255,255,.23); box-shadow: 0 6px 16px rgba(17,68,43,.12), inset 0 1px 0 rgba(255,255,255,.28); }
 .overview .button:disabled { opacity: .55; }
 
-.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 17px 0 37px; }
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; margin: 17px 0 37px; }
 .metric-card { display: flex; align-items: center; gap: 14px; min-height: 100px; padding: 20px; border: 1px solid var(--border); border-radius: 15px; background: var(--glass); box-shadow: var(--glass-shadow); backdrop-filter: blur(18px) saturate(145%); transition: transform .18s, box-shadow .18s, background .18s; }
 .metric-card:hover { background: var(--glass-strong); box-shadow: 0 18px 38px rgba(37,75,79,.12), inset 0 1px 0 rgba(255,255,255,.78); transform: translateY(-2px); }
 .metric-icon { display: grid; width: 43px; height: 43px; flex: 0 0 auto; place-items: center; border: 1px solid rgba(255,255,255,.62); border-radius: 13px; font-size: 19px; font-weight: 700; box-shadow: inset 0 1px 0 rgba(255,255,255,.65); }
 .icon-devices { color: #3184a0; background: rgba(223, 242, 248, .78); }
 .icon-folders { color: #8d68b0; background: rgba(240, 231, 248, .78); }
 .icon-version { color: #39905c; background: rgba(225, 244, 230, .82); }
+.icon-download { color: #3282aa; background: rgba(223, 242, 248, .78); }
+.icon-upload { color: #ac7540; background: rgba(250, 239, 220, .82); }
 .metric-card p { margin: 0 0 7px; color: var(--muted); font-size: 11px; }
 .metric-card strong { display: block; font-size: 20px; letter-spacing: -.025em; }
 .metric-card .metric-version { font-size: 16px; }
+.metric-card small { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
 
 .folders-section { min-height: 190px; }
 .section-heading { align-items: flex-end; margin-bottom: 13px; }
@@ -138,9 +141,9 @@ h1 { margin-bottom: 0; font-size: 20px; letter-spacing: -.025em; }
 .form-card h3 { margin: 0 0 17px; font-size: 14px; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .form-grid > label { display: grid; gap: 7px; color: var(--muted); font-size: 11px; font-weight: 600; }
-.form-grid input, .form-grid textarea { width: 100%; min-width: 0; min-height: 39px; padding: 9px 11px; border: 1px solid rgba(151, 172, 180, .35); border-radius: 9px; color: inherit; background: rgba(255,255,255,.55); font: inherit; font-size: 12px; }
+.form-grid input, .form-grid textarea, .form-grid select { width: 100%; min-width: 0; min-height: 39px; padding: 9px 11px; border: 1px solid rgba(151, 172, 180, .35); border-radius: 9px; color: inherit; background: rgba(255,255,255,.55); font: inherit; font-size: 12px; }
 .form-grid textarea { resize: vertical; }
-.form-grid input:focus, .form-grid textarea:focus { border-color: rgba(46,155,101,.65); outline: 3px solid rgba(46,155,101,.12); }
+.form-grid input:focus, .form-grid textarea:focus, .form-grid select:focus { border-color: rgba(46,155,101,.65); outline: 3px solid rgba(46,155,101,.12); }
 .form-wide { grid-column: 1 / -1; }
 .path-input { display: flex; gap: 8px; }
 .path-input input { flex: 1; }
@@ -157,6 +160,26 @@ h1 { margin-bottom: 0; font-size: 20px; letter-spacing: -.025em; }
 .management-copy h3 { margin: 0 0 5px; font-size: 14px; }
 .identifier { margin: 0 0 6px; color: #8997a0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; overflow-wrap: anywhere; }
 .management-detail { margin: 3px 0 0; color: var(--muted); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+.details-editor { position: relative; }
+.details-editor summary { color: #267c50; cursor: pointer; font-size: 11px; font-weight: 650; }
+.inline-editor { display: grid; min-width: 220px; gap: 7px; margin-top: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--glass-strong); box-shadow: var(--glass-shadow); }
+.inline-editor input, .inline-editor textarea, .inline-editor select { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid rgba(151,172,180,.35); border-radius: 7px; color: inherit; background: rgba(255,255,255,.55); font: inherit; font-size: 11px; }
+.inline-editor textarea { resize: vertical; }
+.inline-editor select { min-height: 34px; }
+.details-editor[open] { z-index: 3; }
+.section-actions { display: flex; gap: 8px; }
+.status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.status-card, .diagnostics-section { padding: 17px 19px; border: 1px solid var(--border); border-radius: 14px; background: var(--glass); box-shadow: var(--glass-shadow); backdrop-filter: blur(18px) saturate(145%); }
+.status-card h3, .diagnostics-section h3 { margin: 0 0 9px; font-size: 13px; }
+.service-entry { display: grid; gap: 4px; padding-top: 9px; border-top: 1px solid rgba(145,167,175,.18); }
+.service-entry strong { font-size: 10px; overflow-wrap: anywhere; }
+.service-entry span { color: var(--muted); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+.service-entry .is-error { color: #b94e3d; }
+.diagnostics-section { margin-bottom: 14px; }
+.diagnostics-list { display: grid; gap: 8px; }
+.diagnostic-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 10px 0; border-top: 1px solid rgba(145,167,175,.18); }
+.diagnostic-entry p { margin: 0; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.diagnostic-entry time { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .management-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
 .button-danger { border-color: rgba(214,143,129,.35); color: #a64b3c; background: rgba(255,245,242,.68); box-shadow: none; }
 .button-danger:hover:not(:disabled) { border-color: rgba(210,105,86,.5); color: #943d31; background: rgba(255,237,232,.88); }
@@ -212,6 +235,8 @@ h1 { margin-bottom: 0; font-size: 20px; letter-spacing: -.025em; }
   .form-card { padding: 16px; }
   .path-input { align-items: stretch; flex-direction: column; }
   .metric-card { align-items: center; flex-direction: row; min-height: 82px; }
+  .section-actions { align-items: flex-end; flex-direction: column; }
+  .diagnostic-entry { grid-template-columns: 1fr; gap: 5px; }
   .folder-stats { grid-template-columns: repeat(2, 1fr); }
   .footer { align-items: flex-start; flex-direction: column; }
 }
@@ -230,16 +255,21 @@ h1 { margin-bottom: 0; font-size: 20px; letter-spacing: -.025em; }
   .icon-devices { color: #80c4da; background: rgba(35, 85, 100, .45); }
   .icon-folders { color: #c3a1e2; background: rgba(87, 62, 107, .44); }
   .icon-version { color: #91d6a4; background: rgba(43, 91, 57, .46); }
+  .icon-download { color: #80c4da; background: rgba(35, 85, 100, .45); }
+  .icon-upload { color: #e2b77f; background: rgba(89, 68, 38, .45); }
   .folder-id { color: #95a5ad; }
   .folder-state.is-paused { color: #e1c17d; }
   .tab:hover { color: #9cddb2; background: rgba(255,255,255,.06); }
   .tab.is-active { border-color: rgba(255,255,255,.12); color: #9cddb2; background: rgba(41,63,48,.65); }
-  .form-grid input, .form-grid textarea { border-color: rgba(255,255,255,.15); background: rgba(17,29,34,.5); }
+  .form-grid input, .form-grid textarea, .form-grid select, .inline-editor input, .inline-editor textarea, .inline-editor select { border-color: rgba(255,255,255,.15); background: rgba(17,29,34,.5); }
   .checkbox-option { border-color: rgba(255,255,255,.1); background: rgba(17,29,34,.35); }
   .button-danger { border-color: rgba(180,95,78,.28); color: #e1a095; background: rgba(72,39,34,.55); }
   .button-danger:hover:not(:disabled) { color: #efb4a9; background: rgba(83,43,37,.82); }
   .sharing-editor { border-top-color: rgba(255,255,255,.1); }
   .sharing-editor summary { color: #9cddb2; }
+  .details-editor summary { color: #9cddb2; }
+  .service-entry, .diagnostic-entry { border-top-color: rgba(255,255,255,.1); }
+  .service-entry .is-error { color: #efb4a9; }
   .toggle-row, .toggle-row:first-child { border-color: rgba(255,255,255,.1); }
   .notice { border-color: rgba(139, 112, 52, .48); color: #e1c98d; background: rgba(62, 51, 29, .72); }
   .error-card { border-color: rgba(144, 78, 64, .5); color: #efb4a9; background: rgba(64, 39, 35, .76); }

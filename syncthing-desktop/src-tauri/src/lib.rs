@@ -79,9 +79,16 @@ struct DashboardSnapshot {
     details_available: bool,
     gui_url: String,
     device_id: String,
+    local_device_name: String,
     version: String,
+    uptime_seconds: u64,
+    incoming_bytes_total: u64,
+    outgoing_bytes_total: u64,
     connected_devices: usize,
     total_devices: usize,
+    discovery_enabled: bool,
+    discovery_status: Vec<ServiceStatus>,
+    listener_status: Vec<ServiceStatus>,
     devices: Vec<DeviceSnapshot>,
     folders: Vec<FolderSnapshot>,
 }
@@ -97,6 +104,26 @@ struct DeviceSnapshot {
     connection_address: String,
     connection_type: String,
     client_version: String,
+    incoming_bytes_total: u64,
+    outgoing_bytes_total: u64,
+    last_seen: String,
+    last_connection_duration_seconds: f64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceStatus {
+    name: String,
+    error: String,
+    lan_addresses: Vec<String>,
+    wan_addresses: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticsSnapshot {
+    errors: Vec<Value>,
+    logs: Vec<Value>,
 }
 
 #[derive(Serialize)]
@@ -107,10 +134,16 @@ struct FolderSnapshot {
     path: String,
     folder_type: String,
     shared_devices: Vec<String>,
+    last_scan: String,
+    last_file: String,
+    last_file_at: String,
+    last_file_deleted: bool,
     state: String,
     paused: bool,
     local_files: u64,
+    local_bytes: u64,
     global_files: u64,
+    global_bytes: u64,
     need_files: u64,
     need_bytes: u64,
     errors: u64,
@@ -474,6 +507,42 @@ async fn get_dashboard(state: State<'_, DesktopState>) -> Result<DashboardSnapsh
         .map_err(|err| format!("Could not read Syncthing status: {err}"))?
 }
 
+#[tauri::command]
+async fn get_diagnostics(state: State<'_, DesktopState>) -> Result<DiagnosticsSnapshot, String> {
+    let connection = state
+        .session
+        .lock()
+        .map_err(|_| "Syncthing session state is unavailable".to_string())?
+        .connection
+        .clone()
+        .ok_or_else(|| "Syncthing is not connected".to_string())?;
+
+    tauri::async_runtime::spawn_blocking(move || diagnostics_snapshot(connection))
+        .await
+        .map_err(|err| format!("Could not read Syncthing diagnostics: {err}"))?
+}
+
+fn response_array(response: &Value, key: &str) -> Vec<Value> {
+    response
+        .get(key)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn diagnostics_snapshot(connection: Connection) -> Result<DiagnosticsSnapshot, String> {
+    let api_key = connection
+        .api_key
+        .as_deref()
+        .ok_or_else(|| "API access is unavailable for this Syncthing instance".to_string())?;
+    let errors = api_get(&connection.gui_url, "rest/system/error", Some(api_key))?;
+    let logs = api_get(&connection.gui_url, "rest/system/log", Some(api_key))?;
+    Ok(DiagnosticsSnapshot {
+        errors: response_array(&errors, "errors"),
+        logs: response_array(&logs, "messages"),
+    })
+}
+
 fn dashboard_snapshot(connection: Connection) -> Result<DashboardSnapshot, String> {
     let Some(api_key) = connection.api_key.as_deref() else {
         return Ok(DashboardSnapshot {
@@ -482,9 +551,16 @@ fn dashboard_snapshot(connection: Connection) -> Result<DashboardSnapshot, Strin
             details_available: false,
             gui_url: connection.gui_url,
             device_id: connection.device_id,
+            local_device_name: String::new(),
             version: connection.version,
+            uptime_seconds: 0,
+            incoming_bytes_total: 0,
+            outgoing_bytes_total: 0,
             connected_devices: 0,
             total_devices: 0,
+            discovery_enabled: false,
+            discovery_status: Vec::new(),
+            listener_status: Vec::new(),
             devices: Vec::new(),
             folders: Vec::new(),
         });
@@ -495,17 +571,31 @@ fn dashboard_snapshot(connection: Connection) -> Result<DashboardSnapshot, Strin
         "rest/system/connections",
         Some(api_key),
     )?;
-    let connection_stats = connection_stats
+    let total_stats = connection_stats.get("total").unwrap_or(&Value::Null);
+    let connection_map = connection_stats
         .get("connections")
         .unwrap_or(&connection_stats);
     let configured_devices = api_get(&connection.gui_url, "rest/config/devices", Some(api_key))?;
+    let device_stats = api_get(&connection.gui_url, "rest/stats/device", Some(api_key))?;
+    let system_status = api_get(&connection.gui_url, "rest/system/status", Some(api_key))?;
     let mut devices = Vec::new();
+    let mut local_device_name = connection.device_id.clone();
     if let Some(configured_devices) = configured_devices.as_array() {
         for device in configured_devices {
             let Some(id) = device.get("deviceID").and_then(Value::as_str) else {
                 continue;
             };
-            let stats = connection_stats.get(id).unwrap_or(&Value::Null);
+            if id == connection.device_id {
+                local_device_name = device
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or(id)
+                    .to_string();
+                continue;
+            }
+            let stats = connection_map.get(id).unwrap_or(&Value::Null);
+            let historical_stats = device_stats.get(id).unwrap_or(&Value::Null);
             devices.push(DeviceSnapshot {
                 id: id.to_string(),
                 name: device
@@ -542,6 +632,17 @@ fn dashboard_snapshot(connection: Connection) -> Result<DashboardSnapshot, Strin
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
+                incoming_bytes_total: json_u64(stats, "inBytesTotal"),
+                outgoing_bytes_total: json_u64(stats, "outBytesTotal"),
+                last_seen: historical_stats
+                    .get("lastSeen")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                last_connection_duration_seconds: historical_stats
+                    .get("lastConnectionDurationS")
+                    .and_then(Value::as_f64)
+                    .unwrap_or_default(),
             });
         }
     }
@@ -549,6 +650,7 @@ fn dashboard_snapshot(connection: Connection) -> Result<DashboardSnapshot, Strin
     let connected_devices = devices.iter().filter(|device| device.connected).count();
 
     let configured_folders = api_get(&connection.gui_url, "rest/config/folders", Some(api_key))?;
+    let folder_stats = api_get(&connection.gui_url, "rest/stats/folder", Some(api_key))?;
     let mut folders = Vec::new();
     if let Some(configured_folders) = configured_folders.as_array() {
         for folder in configured_folders {
@@ -561,6 +663,8 @@ fn dashboard_snapshot(connection: Connection) -> Result<DashboardSnapshot, Strin
                 &format!("rest/db/status?folder={encoded_id}"),
                 Some(api_key),
             )?;
+            let historical_stats = folder_stats.get(id).unwrap_or(&Value::Null);
+            let last_file = historical_stats.get("lastFile").unwrap_or(&Value::Null);
             folders.push(FolderSnapshot {
                 id: id.to_string(),
                 label: folder
@@ -586,9 +690,29 @@ fn dashboard_snapshot(connection: Connection) -> Result<DashboardSnapshot, Strin
                         devices
                             .iter()
                             .filter_map(|device| device.get("deviceID").and_then(Value::as_str))
+                            .filter(|device_id| *device_id != connection.device_id)
                             .map(str::to_string)
                             .collect()
                     })
+                    .unwrap_or_default(),
+                last_scan: historical_stats
+                    .get("lastScan")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                last_file: last_file
+                    .get("filename")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                last_file_at: last_file
+                    .get("at")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                last_file_deleted: last_file
+                    .get("deleted")
+                    .and_then(Value::as_bool)
                     .unwrap_or_default(),
                 state: summary
                     .get("state")
@@ -603,7 +727,9 @@ fn dashboard_snapshot(connection: Connection) -> Result<DashboardSnapshot, Strin
                     .to_string(),
                 paused: folder.get("paused").and_then(Value::as_bool) == Some(true),
                 local_files: json_u64(&summary, "localFiles"),
+                local_bytes: json_u64(&summary, "localBytes"),
                 global_files: json_u64(&summary, "globalFiles"),
+                global_bytes: json_u64(&summary, "globalBytes"),
                 need_files: json_u64(&summary, "needFiles"),
                 need_bytes: json_u64(&summary, "needBytes"),
                 errors: json_u64(&summary, "errors"),
@@ -617,12 +743,56 @@ fn dashboard_snapshot(connection: Connection) -> Result<DashboardSnapshot, Strin
         details_available: true,
         gui_url: connection.gui_url,
         device_id: connection.device_id,
+        local_device_name,
         version: connection.version,
+        uptime_seconds: json_u64(&system_status, "uptime"),
+        incoming_bytes_total: json_u64(total_stats, "inBytesTotal"),
+        outgoing_bytes_total: json_u64(total_stats, "outBytesTotal"),
         connected_devices,
         total_devices,
+        discovery_enabled: system_status
+            .get("discoveryEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or_default(),
+        discovery_status: service_status_list(system_status.get("discoveryStatus")),
+        listener_status: service_status_list(system_status.get("connectionServiceStatus")),
         devices,
         folders,
     })
+}
+
+fn service_status_list(status: Option<&Value>) -> Vec<ServiceStatus> {
+    status
+        .and_then(Value::as_object)
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|(name, entry)| ServiceStatus {
+                    name: name.clone(),
+                    error: entry
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    lan_addresses: string_array(entry.get("lanAddresses")),
+                    wan_addresses: string_array(entry.get("wanAddresses")),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn string_array(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn json_u64(value: &Value, key: &str) -> u64 {
@@ -822,6 +992,39 @@ async fn add_device(
 }
 
 #[tauri::command]
+async fn update_device(
+    state: State<'_, DesktopState>,
+    device_id: String,
+    name: String,
+    addresses: Vec<String>,
+) -> Result<(), String> {
+    let connection = state
+        .session
+        .lock()
+        .map_err(|_| "Syncthing session state is unavailable".to_string())?
+        .connection
+        .clone()
+        .ok_or_else(|| "Syncthing is not connected".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let addresses: Vec<String> = addresses
+            .into_iter()
+            .map(|address| address.trim().to_string())
+            .filter(|address| !address.is_empty())
+            .collect();
+        api_patch(
+            &connection,
+            &["rest", "config", "devices", &device_id],
+            &json!({
+                "name": name.trim(),
+                "addresses": if addresses.is_empty() { vec!["dynamic".to_string()] } else { addresses }
+            }),
+        )
+    })
+    .await
+    .map_err(|err| format!("Could not update device: {err}"))?
+}
+
+#[tauri::command]
 async fn set_device_paused(
     state: State<'_, DesktopState>,
     device_id: String,
@@ -868,10 +1071,17 @@ async fn add_folder(
     folder_id: String,
     label: String,
     path: String,
+    folder_type: String,
     device_ids: Vec<String>,
 ) -> Result<(), String> {
     if folder_id.trim().is_empty() || path.trim().is_empty() {
         return Err("Folder ID and local path cannot be empty".into());
+    }
+    if !matches!(
+        folder_type.as_str(),
+        "sendreceive" | "sendonly" | "receiveonly"
+    ) {
+        return Err("Unsupported folder type".into());
     }
     let connection = state
         .session
@@ -885,6 +1095,7 @@ async fn add_folder(
             "id": folder_id.trim(),
             "label": label.trim(),
             "path": path.trim(),
+            "type": folder_type,
             "devices": device_ids
                 .into_iter()
                 .map(|device_id| json!({ "deviceID": device_id }))
@@ -895,6 +1106,41 @@ async fn add_folder(
     })
     .await
     .map_err(|err| format!("Could not add folder: {err}"))?
+}
+
+#[tauri::command]
+async fn update_folder(
+    state: State<'_, DesktopState>,
+    folder_id: String,
+    label: String,
+    folder_type: Option<String>,
+) -> Result<(), String> {
+    let connection = state
+        .session
+        .lock()
+        .map_err(|_| "Syncthing session state is unavailable".to_string())?
+        .connection
+        .clone()
+        .ok_or_else(|| "Syncthing is not connected".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut body = json!({ "label": label.trim() });
+        if let Some(folder_type) = folder_type {
+            if !matches!(
+                folder_type.as_str(),
+                "sendreceive" | "sendonly" | "receiveonly"
+            ) {
+                return Err("Unsupported folder type".into());
+            }
+            body["type"] = json!(folder_type);
+        }
+        api_patch(
+            &connection,
+            &["rest", "config", "folders", &folder_id],
+            &body,
+        )
+    })
+    .await
+    .map_err(|err| format!("Could not update folder: {err}"))?
 }
 
 #[tauri::command]
@@ -988,6 +1234,23 @@ async fn restart_syncthing(state: State<'_, DesktopState>) -> Result<(), String>
     })
     .await
     .map_err(|err| format!("Could not restart Syncthing: {err}"))?
+}
+
+#[tauri::command]
+async fn clear_errors(state: State<'_, DesktopState>) -> Result<(), String> {
+    let connection = state
+        .session
+        .lock()
+        .map_err(|_| "Syncthing session state is unavailable".to_string())?
+        .connection
+        .clone()
+        .ok_or_else(|| "Syncthing is not connected".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let url = api_url(&connection, &["rest", "system", "error", "clear"])?;
+        api_request(&connection, "POST", &url, None)
+    })
+    .await
+    .map_err(|err| format!("Could not clear Syncthing errors: {err}"))?
 }
 
 #[tauri::command]
@@ -1546,9 +1809,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             add_device,
             add_folder,
+            clear_errors,
             choose_folder,
             connect_to_syncthing,
             get_dashboard,
+            get_diagnostics,
             get_network_settings,
             remove_device,
             remove_folder,
@@ -1559,7 +1824,9 @@ pub fn run() {
             set_folder_devices,
             set_folder_paused,
             set_network_settings,
-            stop_syncthing
+            stop_syncthing,
+            update_device,
+            update_folder
         ]);
 
     let app = builder
@@ -1727,35 +1994,51 @@ mod tests {
     #[test]
     fn dashboard_refresh_reads_device_and_folder_status() {
         let (gui_url, receiver) = mock_server(vec![
-            r#"{"connections":{"device-a":{"connected":true},"device-b":{"connected":false}}}"#.into(),
-            r#"[{"deviceID":"device-a","name":"Laptop","addresses":["dynamic"],"paused":false},{"deviceID":"device-b","name":"NAS","addresses":["tcp://nas:22000"],"paused":false}]"#.into(),
-            r#"[{"id":"docs","label":"Documents","path":"/tmp/docs","type":"sendreceive","devices":[{"deviceID":"device-a"}],"paused":false}]"#.into(),
-            r#"{"state":"syncing","localFiles":9,"globalFiles":12,"needFiles":3,"needBytes":2048,"errors":1}"#.into(),
+            r#"{"connections":{"device-a":{"connected":true,"inBytesTotal":12,"outBytesTotal":34},"device-b":{"connected":false}},"total":{"inBytesTotal":120,"outBytesTotal":340}}"#.into(),
+            r#"[{"deviceID":"local-device","name":"This Mac","addresses":["dynamic"]},{"deviceID":"device-a","name":"Laptop","addresses":["dynamic"],"paused":false},{"deviceID":"device-b","name":"NAS","addresses":["tcp://nas:22000"],"paused":false}]"#.into(),
+            r#"{"device-a":{"lastSeen":"2025-01-02T03:04:05Z","lastConnectionDurationS":42.5}}"#.into(),
+            r#"{"uptime":3600,"discoveryEnabled":true,"connectionServiceStatus":{"tcp://0.0.0.0:22000":{"error":null,"lanAddresses":["tcp://192.168.1.2:22000"],"wanAddresses":[]}},"discoveryStatus":{"global":{"error":null}}}"#.into(),
+            r#"[{"id":"docs","label":"Documents","path":"/tmp/docs","type":"sendreceive","devices":[{"deviceID":"local-device"},{"deviceID":"device-a"}],"paused":false}]"#.into(),
+            r#"{"docs":{"lastScan":"2025-01-02T03:00:00Z","lastFile":{"at":"2025-01-02T03:01:00Z","filename":"report.txt","deleted":false}}}"#.into(),
+            r#"{"state":"syncing","localFiles":9,"localBytes":1024,"globalFiles":12,"globalBytes":4096,"needFiles":3,"needBytes":2048,"errors":1}"#.into(),
         ]);
 
         let snapshot = dashboard_snapshot(mock_connection(gui_url)).unwrap();
 
         assert_eq!(snapshot.connected_devices, 1);
         assert_eq!(snapshot.total_devices, 2);
+        assert_eq!(snapshot.local_device_name, "This Mac");
+        assert_eq!(snapshot.uptime_seconds, 3600);
+        assert_eq!(snapshot.incoming_bytes_total, 120);
+        assert_eq!(snapshot.outgoing_bytes_total, 340);
+        assert_eq!(snapshot.discovery_status.len(), 1);
+        assert_eq!(snapshot.listener_status.len(), 1);
         assert_eq!(snapshot.devices[0].name, "Laptop");
         assert!(snapshot.devices[0].connected);
+        assert_eq!(snapshot.devices[0].last_seen, "2025-01-02T03:04:05Z");
         assert_eq!(snapshot.folders.len(), 1);
         assert_eq!(snapshot.folders[0].path, "/tmp/docs");
         assert_eq!(snapshot.folders[0].shared_devices, vec!["device-a"]);
+        assert_eq!(snapshot.folders[0].local_bytes, 1024);
+        assert_eq!(snapshot.folders[0].global_bytes, 4096);
+        assert_eq!(snapshot.folders[0].last_file, "report.txt");
         assert_eq!(snapshot.folders[0].state, "syncing");
         assert_eq!(snapshot.folders[0].need_files, 3);
         assert_eq!(snapshot.folders[0].need_bytes, 2048);
         assert_eq!(snapshot.folders[0].errors, 1);
-        let requests = requests(receiver, 4);
+        let requests = requests(receiver, 7);
         assert!(
             requests[0]
                 .line
                 .starts_with("GET /rest/system/connections ")
         );
         assert!(requests[1].line.starts_with("GET /rest/config/devices "));
-        assert!(requests[2].line.starts_with("GET /rest/config/folders "));
+        assert!(requests[2].line.starts_with("GET /rest/stats/device "));
+        assert!(requests[3].line.starts_with("GET /rest/system/status "));
+        assert!(requests[4].line.starts_with("GET /rest/config/folders "));
+        assert!(requests[5].line.starts_with("GET /rest/stats/folder "));
         assert!(
-            requests[3]
+            requests[6]
                 .line
                 .starts_with("GET /rest/db/status?folder=docs ")
         );
@@ -1765,6 +2048,26 @@ mod tests {
                 .to_ascii_lowercase()
                 .contains("x-api-key: test-api-key")
         );
+    }
+
+    #[test]
+    fn diagnostics_reads_errors_and_recent_logs() {
+        let (gui_url, receiver) = mock_server(vec![
+            r#"{"errors":[{"when":"2025-01-02T03:04:05Z","message":"folder unavailable"}]}"#.into(),
+            r#"{"messages":[{"when":"2025-01-02T03:05:00Z","message":"device connected"}]}"#.into(),
+        ]);
+
+        let diagnostics = diagnostics_snapshot(mock_connection(gui_url)).unwrap();
+
+        assert_eq!(diagnostics.errors.len(), 1);
+        assert_eq!(diagnostics.logs.len(), 1);
+        assert_eq!(
+            diagnostics.errors[0].get("message").and_then(Value::as_str),
+            Some("folder unavailable")
+        );
+        let requests = requests(receiver, 2);
+        assert!(requests[0].line.starts_with("GET /rest/system/error "));
+        assert!(requests[1].line.starts_with("GET /rest/system/log "));
     }
 
     #[test]

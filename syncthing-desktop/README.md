@@ -6,10 +6,17 @@ folders; and common discovery, relay, NAT, and bandwidth settings without
 requiring the Syncthing web interface or a terminal.
 
 The dashboard can add devices and folders, select a local folder through the
-native directory picker, change folder sharing, pause or resume syncing, and
-request folder scans. Removing a folder removes only its Syncthing
-configuration; it does not delete the local directory or files. Stopping a
-Syncthing process started outside the desktop app requires confirmation.
+native directory picker, edit device details and folder labels/types, change
+folder sharing, pause or resume syncing, and request folder scans. It also
+shows transfer totals and rates, device and folder statistics, listener and
+discovery status, and Syncthing errors and logs. Removing a folder removes only
+its Syncthing configuration; it does not delete the local directory or files.
+Stopping a Syncthing process started outside the desktop app requires
+confirmation.
+
+The dashboard uses Syncthing's local GUI REST API; it does not embed or disable
+Syncthing's browser interface. That API must remain enabled for desktop
+management to work, so the local web page may still be reachable separately.
 
 ## Requirements
 

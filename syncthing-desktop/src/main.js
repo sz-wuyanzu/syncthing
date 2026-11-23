@@ -11,6 +11,10 @@ const elements = {
   deviceCount: document.querySelector("#device-count"),
   folderCount: document.querySelector("#folder-count"),
   version: document.querySelector("#version"),
+  incomingTotal: document.querySelector("#incoming-total"),
+  incomingRate: document.querySelector("#incoming-rate"),
+  outgoingTotal: document.querySelector("#outgoing-total"),
+  outgoingRate: document.querySelector("#outgoing-rate"),
   overviewFolders: document.querySelector("#overview-folders"),
   devices: document.querySelector("#devices"),
   devicesEmpty: document.querySelector("#devices-empty"),
@@ -29,6 +33,11 @@ const elements = {
   folderForm: document.querySelector("#folder-form"),
   settingsForm: document.querySelector("#settings-form"),
   folderPath: document.querySelector("#folder-path-input"),
+  networkStatus: document.querySelector("#network-status"),
+  systemErrors: document.querySelector("#system-errors"),
+  systemLogs: document.querySelector("#system-logs"),
+  refreshDiagnostics: document.querySelector("#refresh-diagnostics"),
+  clearErrors: document.querySelector("#clear-errors"),
 };
 
 let connection;
@@ -36,6 +45,7 @@ let snapshot;
 let refreshTimer;
 let refreshing = false;
 let serviceConnected = false;
+let previousTransfer;
 
 function showNotice(message) {
   elements.notice.textContent = message;
@@ -56,6 +66,8 @@ function setConnected(connected) {
   elements.serviceAction.disabled = false;
   elements.restartService.disabled = !connected;
   elements.refresh.disabled = !connected;
+  elements.refreshDiagnostics.disabled = !connected || !snapshot?.detailsAvailable;
+  elements.clearErrors.disabled = !connected || !snapshot?.detailsAvailable;
 }
 
 async function connect() {
@@ -96,7 +108,7 @@ async function refreshDashboard() {
       ? "Syncthing 由桌面看板启动并管理"
       : "已连接到外部运行的 Syncthing";
     elements.deviceId.textContent = snapshot.deviceId
-      ? `本机设备 ID：${snapshot.deviceId}`
+      ? `${snapshot.localDeviceName || "本机"} · 设备 ID：${snapshot.deviceId} · 已运行 ${formatDuration(snapshot.uptimeSeconds)}`
       : "已连接本机 Syncthing 服务";
     elements.deviceCount.textContent = snapshot.detailsAvailable
       ? `${snapshot.connectedDevices} / ${snapshot.totalDevices}`
@@ -105,6 +117,15 @@ async function refreshDashboard() {
       ? String(snapshot.folders.length)
       : "—";
     elements.version.textContent = snapshot.version || "—";
+    const now = Date.now();
+    const incoming = Number(snapshot.incomingBytesTotal) || 0;
+    const outgoing = Number(snapshot.outgoingBytesTotal) || 0;
+    const elapsed = previousTransfer ? Math.max((now - previousTransfer.time) / 1000, 0.001) : 0;
+    elements.incomingTotal.textContent = formatBytes(incoming);
+    elements.outgoingTotal.textContent = formatBytes(outgoing);
+    elements.incomingRate.textContent = `当前 ${formatRate(previousTransfer ? (incoming - previousTransfer.incoming) / elapsed : 0)}`;
+    elements.outgoingRate.textContent = `当前 ${formatRate(previousTransfer ? (outgoing - previousTransfer.outgoing) / elapsed : 0)}`;
+    previousTransfer = { incoming, outgoing, time: now };
     elements.lastUpdated.textContent = `更新于 ${new Date().toLocaleTimeString()}`;
     elements.notice.textContent = snapshot.detailsAvailable
       ? ""
@@ -116,6 +137,9 @@ async function refreshDashboard() {
     renderDevices(snapshot.devices, snapshot.detailsAvailable);
     renderFolders(snapshot.folders, snapshot.devices, snapshot.detailsAvailable);
     renderFolderDeviceOptions(snapshot.devices);
+    renderNetworkStatus(snapshot);
+    elements.refreshDiagnostics.disabled = !snapshot.detailsAvailable;
+    elements.clearErrors.disabled = !snapshot.detailsAvailable;
     elements.errorCard.hidden = true;
   } catch (error) {
     setConnected(false);
@@ -161,15 +185,47 @@ function renderDevices(devices, controlsAvailable) {
     const details = document.createElement("p");
     details.className = "management-detail";
     details.textContent = device.connected
-      ? [device.connection_type, device.connection_address, device.client_version].filter(Boolean).join(" · ")
+      ? [device.connectionType, device.connectionAddress, device.clientVersion].filter(Boolean).join(" · ")
       : `地址：${device.addresses.join(", ") || "动态发现"}`;
-    copy.append(title, identifier, details);
+    const history = document.createElement("p");
+    history.className = "management-detail";
+    history.textContent = `上次连接：${formatOptionalDate(device.lastSeen, "从未连接")} · 本次连接时长：${formatDuration(device.lastConnectionDurationSeconds)}`;
+    const traffic = document.createElement("p");
+    traffic.className = "management-detail";
+    traffic.textContent = `本机向该设备发送 ${formatBytes(device.outgoingBytesTotal)} · 从该设备接收 ${formatBytes(device.incomingBytesTotal)}`;
+    copy.append(title, identifier, details, history, traffic);
 
     const state = document.createElement("span");
     state.className = `folder-state${device.paused ? " is-paused" : ""}`;
     state.textContent = device.paused ? "已暂停" : device.connected ? "已连接" : "未连接";
     const actions = document.createElement("div");
     actions.className = "management-actions";
+    const edit = document.createElement("details");
+    edit.className = "details-editor";
+    const editSummary = document.createElement("summary");
+    editSummary.textContent = "编辑";
+    const editForm = document.createElement("div");
+    editForm.className = "inline-editor";
+    const nameInput = document.createElement("input");
+    nameInput.value = device.name;
+    nameInput.setAttribute("aria-label", "设备名称");
+    const addressesInput = document.createElement("textarea");
+    addressesInput.rows = 2;
+    addressesInput.value = device.addresses.join("\n");
+    addressesInput.setAttribute("aria-label", "设备地址，每行一个");
+    const saveEdit = button("保存设备", "button button-small");
+    saveEdit.disabled = !controlsAvailable;
+    saveEdit.addEventListener("click", () => runAction(async () => {
+      await invoke("update_device", {
+        deviceId: device.id,
+        name: nameInput.value.trim(),
+        addresses: addressesInput.value.split(/[\n,]+/).map((address) => address.trim()).filter(Boolean),
+      });
+      showNotice("设备配置已更新。");
+      await refreshDashboard();
+    }));
+    editForm.append(nameInput, addressesInput, saveEdit);
+    edit.append(editSummary, editForm);
     const toggle = button(device.paused ? "恢复" : "暂停", "button button-small button-secondary");
     toggle.disabled = !controlsAvailable;
     toggle.addEventListener("click", () => runAction(async () => {
@@ -184,7 +240,7 @@ function renderDevices(devices, controlsAvailable) {
       showNotice("设备配置已移除。");
       await refreshDashboard();
     }));
-    actions.append(state, toggle, remove);
+    actions.append(state, edit, toggle, remove);
     card.append(copy, actions);
     elements.devices.append(card);
   }
@@ -211,13 +267,65 @@ function renderFolders(folders, devices, controlsAvailable) {
     shareText.textContent = `共享设备：${folder.sharedDevices
       .map((id) => devices.find((device) => device.id === id)?.name || id)
       .join(", ") || "仅本机"}`;
-    copy.append(title, identifier, path, shareText);
+    const statistics = document.createElement("p");
+    statistics.className = "management-detail";
+    statistics.textContent = `本地 ${formatBytes(folder.localBytes)} / ${folder.localFiles} 个文件 · 全局 ${formatBytes(folder.globalBytes)} / ${folder.globalFiles} 个文件 · 待同步 ${formatBytes(folder.needBytes)} / ${folder.needFiles} 个文件`;
+    const lastScan = document.createElement("p");
+    lastScan.className = "management-detail";
+    lastScan.textContent = `上次扫描：${formatOptionalDate(folder.lastScan, "暂无记录")}${folder.lastFile ? ` · 最近变更：${folder.lastFile}${folder.lastFileDeleted ? "（已删除）" : ""}${folder.lastFileAt ? `，${formatOptionalDate(folder.lastFileAt, "")}` : ""}` : ""}`;
+    const folderErrors = document.createElement("p");
+    folderErrors.className = "management-detail";
+    folderErrors.textContent = `同步类型：${humanizeFolderType(folder.folderType)} · 错误：${folder.errors}`;
+    copy.append(title, identifier, path, shareText, statistics, lastScan, folderErrors);
 
     const state = document.createElement("span");
     state.className = `folder-state${folder.paused ? " is-paused" : ""}`;
     state.textContent = folder.paused ? "已暂停" : humanizeState(folder.state);
     const actions = document.createElement("div");
     actions.className = "management-actions";
+    const edit = document.createElement("details");
+    edit.className = "details-editor";
+    const editSummary = document.createElement("summary");
+    editSummary.textContent = "编辑";
+    const editForm = document.createElement("div");
+    editForm.className = "inline-editor";
+    const labelInput = document.createElement("input");
+    labelInput.value = folder.label;
+    labelInput.setAttribute("aria-label", "文件夹名称");
+    const typeInput = document.createElement("select");
+    typeInput.setAttribute("aria-label", "同步类型");
+    const folderTypes = [
+      ["sendreceive", "双向同步"],
+      ["sendonly", "仅发送"],
+      ["receiveonly", "仅接收"],
+      ["receiveencrypted", "接收加密数据"],
+    ];
+    if (!folderTypes.some(([value]) => value === folder.folderType)) {
+      folderTypes.push([folder.folderType, `当前类型：${humanizeFolderType(folder.folderType)}`]);
+    }
+    for (const [value, label] of folderTypes) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      option.disabled = value === "receiveencrypted" || !["sendreceive", "sendonly", "receiveonly"].includes(value);
+      typeInput.append(option);
+    }
+    typeInput.value = folder.folderType || "sendreceive";
+    const canChangeType = ["sendreceive", "sendonly", "receiveonly"].includes(typeInput.value);
+    typeInput.disabled = !canChangeType;
+    const saveEdit = button("保存文件夹", "button button-small");
+    saveEdit.disabled = !controlsAvailable;
+    saveEdit.addEventListener("click", () => runAction(async () => {
+      await invoke("update_folder", {
+        folderId: folder.id,
+        label: labelInput.value.trim(),
+        folderType: canChangeType ? typeInput.value : null,
+      });
+      showNotice("文件夹配置已更新。");
+      await refreshDashboard();
+    }));
+    editForm.append(labelInput, typeInput, saveEdit);
+    edit.append(editSummary, editForm);
     const toggle = button(folder.paused ? "恢复" : "暂停", "button button-small button-secondary");
     toggle.disabled = !controlsAvailable;
     toggle.addEventListener("click", () => runAction(async () => {
@@ -239,7 +347,7 @@ function renderFolders(folders, devices, controlsAvailable) {
       showNotice("文件夹配置已移除，本机文件保持不变。");
       await refreshDashboard();
     }));
-    actions.append(state, toggle, scan, remove);
+    actions.append(state, edit, toggle, scan, remove);
 
     const sharing = document.createElement("details");
     sharing.className = "sharing-editor";
@@ -276,6 +384,126 @@ function renderFolderDeviceOptions(devices) {
       checkboxOption(device.id, `${device.name} · ${device.connected ? "已连接" : "未连接"}`, false, "new-folder")
     );
   }
+}
+
+function renderNetworkStatus(currentSnapshot) {
+  elements.networkStatus.replaceChildren();
+  const sections = [
+    { title: "设备监听", entries: currentSnapshot.listenerStatus, enabled: true },
+    { title: "设备发现", entries: currentSnapshot.discoveryStatus, enabled: currentSnapshot.discoveryEnabled },
+  ];
+  for (const section of sections) {
+    const card = document.createElement("article");
+    card.className = "status-card";
+    const title = document.createElement("h3");
+    title.textContent = section.title;
+    const state = document.createElement("p");
+    state.className = "management-detail";
+    state.textContent = section.enabled ? "已启用" : "未启用";
+    card.append(title, state);
+    if (section.entries.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "management-detail";
+      empty.textContent = "暂无运行状态";
+      card.append(empty);
+    }
+    for (const entry of section.entries) {
+      const item = document.createElement("div");
+      item.className = "service-entry";
+      const name = document.createElement("strong");
+      name.textContent = entry.name;
+      const detail = document.createElement("span");
+      const addresses = [...(entry.lanAddresses || []), ...(entry.wanAddresses || [])];
+      detail.textContent = entry.error || addresses.join(" · ") || "运行正常";
+      if (entry.error) detail.classList.add("is-error");
+      item.append(name, detail);
+      card.append(item);
+    }
+    elements.networkStatus.append(card);
+  }
+}
+
+async function loadDiagnostics() {
+  if (!snapshot?.detailsAvailable) return;
+  elements.refreshDiagnostics.disabled = true;
+  try {
+    const diagnostics = await invoke("get_diagnostics");
+    renderDiagnosticList(elements.systemErrors, diagnostics.errors, "当前没有错误。");
+    renderDiagnosticList(elements.systemLogs, diagnostics.logs, "暂无近期日志。");
+  } catch (error) {
+    displayError(error, "读取诊断信息失败");
+  } finally {
+    elements.refreshDiagnostics.disabled = false;
+  }
+}
+
+function renderDiagnosticList(container, entries, emptyText) {
+  container.replaceChildren();
+  if (entries.length === 0) {
+    container.append(emptyMessage(emptyText, ""));
+    return;
+  }
+  for (const entry of entries) {
+    const row = document.createElement("article");
+    row.className = "diagnostic-entry";
+    const message = document.createElement("p");
+    message.textContent = entry.message || entry.msg || JSON.stringify(entry);
+    const timestamp = document.createElement("time");
+    const value = entry.when || entry.time || entry.timestamp;
+    timestamp.textContent = value ? formatDate(value) : "";
+    row.append(message, timestamp);
+    container.append(row);
+  }
+}
+
+function formatBytes(bytes) {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value < 1000) return `${value} B`;
+  const units = ["KB", "MB", "GB", "TB", "PB"];
+  let converted = value;
+  let index = -1;
+  do {
+    converted /= 1000;
+    index += 1;
+  } while (converted >= 1000 && index < units.length - 1);
+  return `${converted.toFixed(converted >= 100 ? 0 : converted >= 10 ? 1 : 2)} ${units[index]}`;
+}
+
+function formatRate(bytesPerSecond) {
+  return `${formatBytes(Math.max(0, bytesPerSecond))}/s`;
+}
+
+function formatDuration(seconds) {
+  let remaining = Math.max(0, Math.floor(Number(seconds) || 0));
+  const days = Math.floor(remaining / 86400);
+  remaining %= 86400;
+  const hours = Math.floor(remaining / 3600);
+  remaining %= 3600;
+  const minutes = Math.floor(remaining / 60);
+  const parts = [];
+  if (days) parts.push(`${days} 天`);
+  if (hours) parts.push(`${hours} 小时`);
+  if (minutes && parts.length < 2) parts.push(`${minutes} 分钟`);
+  return parts.join("") || `${remaining} 秒`;
+}
+
+function formatDate(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+}
+
+function formatOptionalDate(value, fallback) {
+  if (!value || value.startsWith("0001-01-01") || value.startsWith("1970-01-01")) return fallback;
+  return formatDate(value);
+}
+
+function humanizeFolderType(folderType) {
+  return ({
+    sendreceive: "双向同步",
+    sendonly: "仅发送",
+    receiveonly: "仅接收",
+    receiveencrypted: "接收加密数据",
+  })[folderType] ?? folderType ?? "未知类型";
 }
 
 function checkboxOption(value, labelText, checked, group) {
@@ -406,8 +634,17 @@ window.addEventListener("DOMContentLoaded", () => {
         view.hidden = view.id !== tab.dataset.view;
       });
       if (tab.dataset.view === "settings-view") loadNetworkSettings();
+      if (tab.dataset.view === "diagnostics-view") loadDiagnostics();
     });
   });
+
+  elements.refreshDiagnostics.addEventListener("click", loadDiagnostics);
+  elements.clearErrors.addEventListener("click", () => runAction(async () => {
+    if (!window.confirm("清除 Syncthing 当前记录的错误？")) return;
+    await invoke("clear_errors");
+    showNotice("错误记录已清除。");
+    await loadDiagnostics();
+  }));
 
   elements.deviceForm.addEventListener("submit", (event) => runAction(async () => {
     event.preventDefault();
@@ -433,6 +670,7 @@ window.addEventListener("DOMContentLoaded", () => {
       folderId: document.querySelector("#folder-id-input").value.trim(),
       label: document.querySelector("#folder-label-input").value.trim(),
       path: elements.folderPath.value.trim(),
+      folderType: document.querySelector("#folder-type-input").value,
       deviceIds,
     });
     elements.folderForm.reset();
