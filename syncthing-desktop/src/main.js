@@ -88,6 +88,7 @@ async function connect() {
     elements.serviceUrl.textContent = connection.guiUrl;
     setConnected(true);
     await refreshDashboard();
+    await loadDefaultReceiveDir();
     refreshTimer = setInterval(refreshDashboard, 5000);
   } catch (error) {
     connection = null;
@@ -96,6 +97,18 @@ async function connect() {
   } finally {
     elements.retry.disabled = false;
     elements.serviceAction.disabled = false;
+  }
+}
+
+// Default receive directory for new folders and one-off transfers:
+// <install dir>/data. Prefilled, not forced — the user can still pick
+// another directory with the folder picker.
+async function loadDefaultReceiveDir() {
+  if (elements.folderPath.value.trim()) return;
+  try {
+    elements.folderPath.value = await invoke("get_default_receive_dir");
+  } catch (error) {
+    // Keep the field empty; the user can still pick a folder manually.
   }
 }
 
@@ -679,6 +692,7 @@ window.addEventListener("DOMContentLoaded", () => {
       deviceIds,
     });
     elements.folderForm.reset();
+    await loadDefaultReceiveDir();
     showNotice("文件夹已添加。");
     await refreshDashboard();
   }));

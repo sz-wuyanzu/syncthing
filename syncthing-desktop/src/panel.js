@@ -7,6 +7,7 @@ const filesElement = document.querySelector("#files");
 const fileCountElement = document.querySelector("#file-count");
 const emptyFilesElement = document.querySelector("#empty-files");
 const errorElement = document.querySelector("#error");
+const moreFilesElement = document.querySelector("#more-files");
 const toggleSyncButton = document.querySelector("#toggle-sync");
 
 const stateLabels = {
@@ -78,11 +79,16 @@ function render(status) {
   toggleSyncButton.textContent = status.paused ? "继续同步" : "暂停同步";
   toggleSyncButton.disabled = false;
   renderFiles(status.activeFiles);
+  const remaining = (status.totalNeedFiles ?? status.activeFiles.length) - status.activeFiles.length;
+  moreFilesElement.hidden = remaining <= 0;
+  if (remaining > 0) moreFilesElement.textContent = `还有 ${remaining} 个文件待下载`;
   errorElement.hidden = true;
 }
 
 async function refresh() {
-  if (refreshInProgress) return;
+  // The panel window stays alive while hidden, so don't poll Syncthing
+  // when nobody can see the result.
+  if (refreshInProgress || !document.hasFocus()) return;
   refreshInProgress = true;
   try {
     render(await invoke("get_sync_status"));
@@ -92,6 +98,7 @@ async function refresh() {
     downloadRateElement.textContent = "—";
     uploadRateElement.textContent = "—";
     renderFiles([]);
+    moreFilesElement.hidden = true;
     toggleSyncButton.disabled = true;
     errorElement.textContent = String(error);
     errorElement.hidden = false;
@@ -117,6 +124,9 @@ toggleSyncButton.addEventListener("click", async () => {
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") invoke("hide_status_panel");
 });
+// Refresh the moment the panel is shown instead of serving up to 5s-old
+// data from the last time it was open.
+window.addEventListener("focus", refresh);
 
 refresh();
-window.setInterval(refresh, 5000);
+window.setInterval(refresh, 2000);

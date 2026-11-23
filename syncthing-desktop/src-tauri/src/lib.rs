@@ -6,10 +6,10 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(unix)]
@@ -36,6 +36,21 @@ const MAX_PORT_ATTEMPTS: usize = 3;
 const API_TIMEOUT: Duration = Duration::from_secs(3);
 const STATUS_PANEL_WIDTH: f64 = 340.0;
 const STATUS_PANEL_HEIGHT: f64 = 410.0;
+
+/// Milliseconds since the Unix epoch of the last left-click on the tray icon.
+/// Clicking the tray icon also takes focus away from the status panel, so the
+/// focus-loss handler uses this to tell "user clicked the tray icon to close
+/// the panel" apart from "user clicked somewhere else": in the first case the
+/// click handler itself hides the panel, and hiding it first would make the
+/// toggle immediately reopen it.
+static LAST_TRAY_CLICK_MS: AtomicU64 = AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 #[derive(Clone, Default)]
 struct DesktopState {
@@ -303,6 +318,11 @@ fn status_client_for_state(state: &DesktopState) -> Result<Arc<status::StatusCli
 
 #[tauri::command]
 fn open_main_window(app: AppHandle) {
+    // The panel is always on top: hide it first or it would float over the
+    // main window the user just asked for.
+    if let Some(panel) = app.get_webview_window("status-panel") {
+        let _ = panel.hide();
+    }
     show_window(&app);
 }
 
@@ -1469,6 +1489,36 @@ async fn choose_folder(app: AppHandle) -> Result<Option<String>, String> {
     .map_err(|err| format!("Could not open the folder picker: {err}"))
 }
 
+/// Default receive directory for one-off transfers and new folders:
+/// `<install dir>/data`, where the install dir is the directory containing
+/// the running executable. The directory is created on demand; if it cannot
+/// be created (for example the install location is read-only) the path is
+/// still returned so the caller can show it and let the user pick another one.
+fn data_dir_for_exe(exe_path: &Path) -> Option<PathBuf> {
+    exe_path.parent().map(|dir| dir.join("data"))
+}
+
+fn default_receive_dir() -> Result<PathBuf, String> {
+    let exe = env::current_exe()
+        .map_err(|err| format!("Could not find the program install directory: {err}"))?;
+    data_dir_for_exe(&exe)
+        .ok_or_else(|| "Could not find the program install directory".to_string())
+}
+
+#[tauri::command]
+async fn get_default_receive_dir() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let dir = default_receive_dir()?;
+        // Best effort: the receive directory should exist before a transfer
+        // or a new folder uses it, but a failure here must not hide the
+        // default path from the user.
+        let _ = fs::create_dir_all(&dir);
+        Ok(dir.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|err| format!("Could not read the default receive directory: {err}"))?
+}
+
 fn gui_candidates() -> Vec<GuiCandidate> {
     let mut candidates = Vec::new();
     if let Some(address) = env::var("SYNCTHING_GUI_URL").ok() {
@@ -1687,10 +1737,8 @@ fn show_window(app: &AppHandle) {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn toggle_status_panel(app: &AppHandle) {
-    use tauri::PhysicalPosition;
-
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn toggle_status_panel(app: &AppHandle, anchor: Option<tauri::Rect>) {
     let Some(window) = app.get_webview_window("status-panel") else {
         return;
     };
@@ -1701,20 +1749,7 @@ fn toggle_status_panel(app: &AppHandle) {
             }
         }
         Ok(false) => {
-            match window.primary_monitor() {
-                Ok(Some(monitor)) => {
-                    let scale = monitor.scale_factor();
-                    let position = monitor.position();
-                    let size = monitor.size();
-                    let x = position.x + size.width as i32 - (STATUS_PANEL_WIDTH * scale) as i32;
-                    let y = position.y + (28.0 * scale) as i32;
-                    if let Err(error) = window.set_position(PhysicalPosition::new(x, y)) {
-                        eprintln!("Could not position status panel: {error}");
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => eprintln!("Could not find a monitor for status panel: {error}"),
-            }
+            position_panel_near_tray(&window, anchor);
             if let Err(error) = window.show() {
                 eprintln!("Could not show status panel: {error}");
             } else if let Err(error) = window.set_focus() {
@@ -1725,8 +1760,89 @@ fn toggle_status_panel(app: &AppHandle) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn toggle_status_panel(_: &AppHandle) {}
+/// Place the status panel like a native tray popover (Dropbox, OneDrive,
+/// Syncthing Tray): centred on the tray icon that was clicked, on the
+/// monitor that icon lives on, 8px away from it, clamped inside that monitor
+/// so it can never run off the right edge or below the screen. On macOS the
+/// menu bar sits at the top so the panel opens below the icon; on Windows
+/// the taskbar usually sits at the bottom so it opens above it — the side is
+/// picked from whether the icon is in the upper or lower half of its
+/// monitor. `anchor` is the tray icon rectangle from `TrayIconEvent::Click`,
+/// in physical pixels and absolute screen coordinates; without one (toggled
+/// from the tray menu) it falls back to a corner of the primary monitor.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn position_panel_near_tray(window: &tauri::WebviewWindow, anchor: Option<tauri::Rect>) {
+    use tauri::PhysicalPosition;
+
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let panel_width = STATUS_PANEL_WIDTH * scale;
+    let panel_height = STATUS_PANEL_HEIGHT * scale;
+    let gap = 8.0 * scale;
+
+    let anchor_physical = anchor.map(|rect| {
+        (
+            rect.position.to_physical::<f64>(scale),
+            rect.size.to_physical::<f64>(scale),
+        )
+    });
+    let monitor = anchor_physical
+        .and_then(|(position, size)| {
+            window
+                .monitor_from_point(
+                    position.x + size.width / 2.0,
+                    position.y + size.height / 2.0,
+                )
+                .ok()
+                .flatten()
+        })
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return;
+    };
+    let monitor_position = monitor.position();
+    let monitor_size = monitor.size();
+    let monitor_left = monitor_position.x as f64;
+    let monitor_top = monitor_position.y as f64;
+    let monitor_right = monitor_left + monitor_size.width as f64;
+    let monitor_bottom = monitor_top + monitor_size.height as f64;
+
+    let (mut x, mut y) = match anchor_physical {
+        Some((position, size)) => {
+            let x = position.x + size.width / 2.0 - panel_width / 2.0;
+            // Open away from the screen edge the icon sits on: below it on
+            // macOS (menu bar on top), above it on Windows (taskbar below).
+            let icon_centre_y = position.y + size.height / 2.0;
+            let below = icon_centre_y < monitor_top + (monitor_bottom - monitor_top) / 2.0;
+            let y = if below {
+                position.y + size.height + gap
+            } else {
+                position.y - gap - panel_height
+            };
+            (x, y)
+        }
+        None => {
+            #[cfg(target_os = "windows")]
+            let fallback_y = monitor_bottom - panel_height - gap;
+            #[cfg(not(target_os = "windows"))]
+            let fallback_y = monitor_top + 28.0 * scale;
+            (monitor_right - panel_width - gap, fallback_y)
+        }
+    };
+    x = x.clamp(
+        monitor_left + gap,
+        (monitor_right - panel_width - gap).max(monitor_left + gap),
+    );
+    y = y.clamp(
+        monitor_top + gap,
+        (monitor_bottom - panel_height - gap).max(monitor_top + gap),
+    );
+    if let Err(error) = window.set_position(PhysicalPosition::new(x as i32, y as i32)) {
+        eprintln!("Could not position status panel: {error}");
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn toggle_status_panel(_: &AppHandle, _: Option<tauri::Rect>) {}
 
 fn quit_app(app: &AppHandle) {
     let state = app.state::<DesktopState>();
@@ -1909,6 +2025,60 @@ fn append_desktop_log(app: &AppHandle, message: &str) {
     }
 }
 
+fn format_rate(bytes_per_second: u64) -> String {
+    const UNITS: [&str; 4] = ["B/秒", "KB/秒", "MB/秒", "GB/秒"];
+    let mut value = bytes_per_second as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{value:.0} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// Tray icon status dot colour per sync state, same palette as the panel's
+/// status dot: green synced, blue syncing/scanning, amber paused, red error,
+/// grey when no folders are configured.
+fn tray_state_dot(state: &str) -> (u8, u8, u8) {
+    match state {
+        "syncing" | "scanning" => (0x6c, 0xb6, 0xff),
+        "paused" => (0xf0, 0xad, 0x4e),
+        "error" => (0xe0, 0x5a, 0x4e),
+        "no-folders" => (0x9a, 0xa8, 0xad),
+        _ => (0x37, 0xc6, 0xa5),
+    }
+}
+
+/// Paint a filled status dot in the bottom-right corner of the app icon and
+/// return it as a tray icon. No extra image files are needed: the dot is
+/// drawn straight onto the default window icon's RGBA pixels at runtime.
+fn tray_icon_with_dot(base: &tauri::image::Image, dot: (u8, u8, u8)) -> tauri::image::Image<'static> {
+    let width = base.width();
+    let height = base.height();
+    let mut rgba = base.rgba().to_vec();
+    let radius = (width.min(height) as f64 * 0.20).max(2.0);
+    let centre_x = width as f64 - radius - 1.0;
+    let centre_y = height as f64 - radius - 1.0;
+    for y in 0..height {
+        for x in 0..width {
+            let dx = x as f64 + 0.5 - centre_x;
+            let dy = y as f64 + 0.5 - centre_y;
+            if dx * dx + dy * dy <= radius * radius {
+                let index = ((y * width + x) * 4) as usize;
+                rgba[index] = dot.0;
+                rgba[index + 1] = dot.1;
+                rgba[index + 2] = dot.2;
+                rgba[index + 3] = 255;
+            }
+        }
+    }
+    tauri::image::Image::new_owned(rgba, width, height)
+}
+
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(DesktopState::default())
@@ -1917,12 +2087,13 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            #[cfg(target_os = "macos")]
+            // Status panel (floating window): the macOS menu-bar popover and
+            // the Windows taskbar flyout share this one window. Only the
+            // blur effect is macOS-only; on Windows the panel.css
+            // background carries the look.
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             {
                 use tauri::{WebviewUrl, webview::WebviewWindowBuilder};
-                use window_vibrancy::{
-                    NSVisualEffectMaterial, NSVisualEffectState, apply_vibrancy,
-                };
 
                 let panel = WebviewWindowBuilder::new(
                     app,
@@ -1939,15 +2110,30 @@ pub fn run() {
                 .skip_taskbar(true)
                 .visible(false)
                 .build()?;
-                apply_vibrancy(
-                    &panel,
-                    NSVisualEffectMaterial::HudWindow,
-                    Some(NSVisualEffectState::Active),
-                    Some(12.0),
-                )?;
+                #[cfg(target_os = "macos")]
+                {
+                    use window_vibrancy::{
+                        NSVisualEffectMaterial, NSVisualEffectState, apply_vibrancy,
+                    };
+                    apply_vibrancy(
+                        &panel,
+                        NSVisualEffectMaterial::HudWindow,
+                        Some(NSVisualEffectState::Active),
+                        Some(12.0),
+                    )?;
+                }
                 let panel_to_hide = panel.clone();
                 panel.on_window_event(move |event| {
                     if let WindowEvent::Focused(false) = event {
+                        // A tray-icon click also defocuses the panel. If that
+                        // click just happened, the click handler is about to
+                        // toggle the panel itself; hiding here first would
+                        // make the toggle reopen it instead of closing it.
+                        if now_ms().saturating_sub(LAST_TRAY_CLICK_MS.load(Ordering::Relaxed))
+                            < 300
+                        {
+                            return;
+                        }
                         if let Err(error) = panel_to_hide.hide() {
                             eprintln!("Could not hide status panel: {error}");
                         }
@@ -1955,34 +2141,32 @@ pub fn run() {
                 });
             }
 
-            let open = MenuItem::with_id(app, "open", "Open dashboard", true, None::<&str>)?;
-            let pause = MenuItem::with_id(app, "pause", "Pause all folders", true, None::<&str>)?;
+            let open = MenuItem::with_id(app, "open", "打开控制台", true, None::<&str>)?;
+            let pause = MenuItem::with_id(app, "pause", "全部暂停", true, None::<&str>)?;
             let resume =
-                MenuItem::with_id(app, "resume", "Resume all folders", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit desktop app", true, None::<&str>)?;
-            #[cfg(target_os = "macos")]
+                MenuItem::with_id(app, "resume", "全部继续", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出 Syncthing Desktop", true, None::<&str>)?;
             let toggle_panel =
                 MenuItem::with_id(app, "toggle-panel", "显示/隐藏状态面板", true, None::<&str>)?;
-            #[cfg(target_os = "macos")]
             let menu = Menu::with_items(app, &[&open, &pause, &resume, &toggle_panel, &quit])?;
-            #[cfg(not(target_os = "macos"))]
-            let menu = Menu::with_items(app, &[&open, &pause, &resume, &quit])?;
             let icon = app
                 .default_window_icon()
                 .cloned()
                 .ok_or_else(|| std::io::Error::other("Syncthing window icon is missing"))?;
 
-            let tray = TrayIconBuilder::new();
-            #[cfg(target_os = "macos")]
-            let tray = tray.show_menu_on_left_click(false);
-            tray.icon(icon)
-                .tooltip("Syncthing - click to open dashboard")
+            // Left click toggles the status panel on macOS and Windows and
+            // the menu stays on right click. The builder default is
+            // menu-on-left-click, which would swallow the click on Windows.
+            let tray = TrayIconBuilder::with_id("main").show_menu_on_left_click(false);
+            let tray_icon = tray
+                .icon(icon)
+                .tooltip("Syncthing Desktop — 点击查看同步状态")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "open" => show_window(app),
                     "pause" => tray_set_all_folders(app, true),
                     "resume" => tray_set_all_folders(app, false),
-                    "toggle-panel" => toggle_status_panel(app),
+                    "toggle-panel" => toggle_status_panel(app, None),
                     "quit" => quit_app(app),
                     _ => {}
                 })
@@ -1990,16 +2174,77 @@ pub fn run() {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
+                        rect,
                         ..
                     } = event
                     {
-                        #[cfg(target_os = "macos")]
-                        toggle_status_panel(tray.app_handle());
-                        #[cfg(not(target_os = "macos"))]
-                        show_window(tray.app_handle());
+                        #[cfg(any(target_os = "macos", target_os = "windows"))]
+                        {
+                            LAST_TRAY_CLICK_MS.store(now_ms(), Ordering::Relaxed);
+                            toggle_status_panel(tray.app_handle(), Some(rect));
+                        }
+                        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+                        {
+                            let _ = rect;
+                            show_window(tray.app_handle());
+                        }
                     }
                 })
                 .build(app)?;
+
+            // Keep the tray icon and tooltip in step with the live sync
+            // state (Syncthing Tray / Dropbox style): a coloured dot on the
+            // icon, and a tooltip with the state and transfer rates. The
+            // icon only changes when the state does, so it never flickers.
+            let tray_icon_base = app.default_window_icon().cloned();
+            let tray_for_poller = tray_icon.clone();
+            let poller_state = app.state::<DesktopState>().inner().clone();
+            thread::spawn(move || {
+                let mut last_state = String::new();
+                let mut last_tooltip = String::new();
+                loop {
+                    thread::sleep(Duration::from_secs(2));
+                    if poller_state.exiting.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let (state, tooltip) =
+                        match status_client_for_state(&poller_state).and_then(|client| client.fetch()) {
+                            Ok(status) => {
+                                let label = match status.state.as_str() {
+                                    "syncing" => "正在同步",
+                                    "scanning" => "正在扫描",
+                                    "paused" => "已暂停",
+                                    "no-folders" => "尚未配置同步文件夹",
+                                    _ => "已同步",
+                                };
+                                let mut tip = format!("Syncthing Desktop — {label}");
+                                if status.download_rate > 0 || status.upload_rate > 0 {
+                                    tip.push_str(&format!(
+                                        " · ↓ {} ↑ {}",
+                                        format_rate(status.download_rate),
+                                        format_rate(status.upload_rate)
+                                    ));
+                                }
+                                (status.state, tip)
+                            }
+                            Err(_) => (
+                                "error".to_string(),
+                                "Syncthing Desktop — 同步状态不可用".to_string(),
+                            ),
+                        };
+                    if state != last_state {
+                        last_state = state.clone();
+                        if let Some(base) = tray_icon_base.as_ref() {
+                            let _ = tray_for_poller
+                                .set_icon(Some(tray_icon_with_dot(base, tray_state_dot(&state))));
+                        }
+                    }
+                    if tooltip != last_tooltip {
+                        last_tooltip = tooltip.clone();
+                        let _ = tray_for_poller.set_tooltip(&tooltip);
+                    }
+                }
+            });
 
             if let Some(window) = app.get_webview_window("main") {
                 let window_to_hide = window.clone();
@@ -2021,6 +2266,7 @@ pub fn run() {
             choose_folder,
             connect_to_syncthing,
             get_dashboard,
+            get_default_receive_dir,
             get_diagnostics,
             get_network_settings,
             remove_device,
@@ -2170,6 +2416,47 @@ mod tests {
         assert!(local_gui_url("192.0.2.10:8384", false).is_none());
         assert!(local_gui_url("http://user:password@127.0.0.1:8384", false).is_none());
         assert!(local_gui_url("/tmp/syncthing.sock", false).is_none());
+    }
+
+    #[test]
+    fn default_receive_dir_is_data_beside_the_executable() {
+        assert_eq!(
+            data_dir_for_exe(Path::new("/Applications/Syncthing Desktop.app/Contents/MacOS/syncthing-desktop")),
+            Some(PathBuf::from(
+                "/Applications/Syncthing Desktop.app/Contents/MacOS/data"
+            ))
+        );
+        assert_eq!(
+            data_dir_for_exe(Path::new("C:\\Program Files\\Syncthing Desktop\\syncthing-desktop.exe")),
+            Some(PathBuf::from("C:\\Program Files\\Syncthing Desktop\\data"))
+        );
+    }
+
+    #[test]
+    fn tray_state_dot_uses_the_panel_palette() {
+        assert_eq!(tray_state_dot("syncing"), (0x6c, 0xb6, 0xff));
+        assert_eq!(tray_state_dot("scanning"), (0x6c, 0xb6, 0xff));
+        assert_eq!(tray_state_dot("paused"), (0xf0, 0xad, 0x4e));
+        assert_eq!(tray_state_dot("error"), (0xe0, 0x5a, 0x4e));
+        assert_eq!(tray_state_dot("idle"), (0x37, 0xc6, 0xa5));
+    }
+
+    #[test]
+    fn tray_tooltip_rates_use_binary_units() {
+        assert_eq!(format_rate(0), "0 B/秒");
+        assert_eq!(format_rate(1536), "1.5 KB/秒");
+        assert_eq!(format_rate(2 * 1024 * 1024), "2.0 MB/秒");
+    }
+
+    #[test]
+    fn tray_icon_dot_paints_only_the_corner() {
+        let base = tauri::image::Image::new_owned(vec![0u8; 8 * 8 * 4], 8, 8);
+        let icon = tray_icon_with_dot(&base, (0x37, 0xc6, 0xa5));
+        assert_eq!((icon.width(), icon.height()), (8, 8));
+        let rgba = icon.rgba();
+        let centre = ((5 * 8 + 5) * 4) as usize;
+        assert_eq!(&rgba[centre..centre + 4], &[0x37, 0xc6, 0xa5, 255]);
+        assert_eq!(&rgba[0..4], &[0, 0, 0, 0]);
     }
 
     #[test]

@@ -32,6 +32,9 @@ pub(crate) struct SyncStatus {
     download_rate: u64,
     upload_rate: u64,
     active_files: Vec<ActiveFile>,
+    /// Files still waiting to download across all folders. The panel only
+    /// shows the first few, so this tells it how many more there are.
+    total_need_files: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -83,6 +86,7 @@ impl StatusClient {
             .ok_or("Syncthing 返回的文件夹列表格式无效")?;
         let mut has_scanning = false;
         let mut has_syncing = false;
+        let mut total_need_files = 0u64;
         let mut folders_to_check = Vec::with_capacity(folders.len());
 
         for folder in folders {
@@ -100,6 +104,10 @@ impl StatusClient {
             folders_to_check.push((id.to_string(), label));
 
             let db_status = self.get_json("/rest/db/status", &[("folder", id)])?;
+            total_need_files += db_status
+                .get("needFiles")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
             match db_status.get("state").and_then(Value::as_str) {
                 Some("scanning") => has_scanning = true,
                 Some("syncing") => has_syncing = true,
@@ -127,6 +135,7 @@ impl StatusClient {
             download_rate,
             upload_rate,
             active_files,
+            total_need_files,
         })
     }
 
@@ -185,7 +194,7 @@ impl StatusClient {
             .lock()
             .map_err(|_| "Syncthing 下载状态不可用".to_string())?
             .as_ref()
-            .filter(|sample| now.duration_since(sample.at) < Duration::from_secs(15))
+            .filter(|sample| now.duration_since(sample.at) < Duration::from_secs(5))
         {
             return Ok(sample.files.clone());
         }
@@ -194,13 +203,13 @@ impl StatusClient {
         for (id, label) in folders {
             let needed = self.get_json(
                 "/rest/db/need",
-                &[("folder", id), ("page", "1"), ("perpage", "3")],
+                &[("folder", id), ("page", "1"), ("perpage", "5")],
             )?;
             let progress = needed
                 .get("progress")
                 .and_then(Value::as_array)
                 .ok_or("Syncthing 返回的下载列表格式无效")?;
-            for file in progress.iter().take(3usize.saturating_sub(files.len())) {
+            for file in progress.iter().take(5usize.saturating_sub(files.len())) {
                 let name = file
                     .get("name")
                     .and_then(Value::as_str)
@@ -211,7 +220,7 @@ impl StatusClient {
                     size: required_u64(file, "size")?,
                 });
             }
-            if files.len() == 3 {
+            if files.len() == 5 {
                 break;
             }
         }
