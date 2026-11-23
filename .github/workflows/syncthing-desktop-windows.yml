@@ -77,7 +77,7 @@ jobs:
             throw "Per-user uninstall registration was not found"
           }
 
-          $installLocation = (Get-ItemProperty $uninstallKey.PSPath).InstallLocation
+          $installLocation = (Get-ItemProperty $uninstallKey.PSPath).InstallLocation.Trim('"')
           $appPath = Join-Path $installLocation "syncthing-desktop.exe"
           if (-not (Test-Path $appPath)) {
             throw "Installed Syncthing Desktop executable was not found"
