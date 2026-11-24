@@ -2427,6 +2427,7 @@ mod tests {
                 "/Applications/Syncthing Desktop.app/Contents/MacOS/data"
             ))
         );
+        #[cfg(windows)]
         assert_eq!(
             data_dir_for_exe(Path::new("C:\\Program Files\\Syncthing Desktop\\syncthing-desktop.exe")),
             Some(PathBuf::from("C:\\Program Files\\Syncthing Desktop\\data"))
