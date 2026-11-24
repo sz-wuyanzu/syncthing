@@ -27,19 +27,19 @@ struct ActiveFileSample {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SyncStatus {
-    state: String,
-    paused: bool,
-    download_rate: u64,
-    upload_rate: u64,
-    active_files: Vec<ActiveFile>,
+    pub(crate) state: String,
+    pub(crate) paused: bool,
+    pub(crate) download_rate: u64,
+    pub(crate) upload_rate: u64,
+    pub(crate) active_files: Vec<ActiveFile>,
     /// Files still waiting to download across all folders. The panel only
     /// shows the first few, so this tells it how many more there are.
-    total_need_files: u64,
+    pub(crate) total_need_files: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ActiveFile {
+pub(crate) struct ActiveFile {
     folder: String,
     name: String,
     size: u64,

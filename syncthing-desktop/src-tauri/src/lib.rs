@@ -25,6 +25,7 @@ use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
+use tauri::image::Image;
 use tauri_plugin_dialog::DialogExt;
 use url::Url;
 
@@ -2196,7 +2197,7 @@ pub fn run() {
             // state (Syncthing Tray / Dropbox style): a coloured dot on the
             // icon, and a tooltip with the state and transfer rates. The
             // icon only changes when the state does, so it never flickers.
-            let tray_icon_base = app.default_window_icon().cloned();
+            let tray_icon_base = app.default_window_icon().map(|img| Image::new_owned(img.rgba().to_vec(), img.width(), img.height()));
             let tray_for_poller = tray_icon.clone();
             let poller_state = app.state::<DesktopState>().inner().clone();
             thread::spawn(move || {
@@ -2241,7 +2242,7 @@ pub fn run() {
                     }
                     if tooltip != last_tooltip {
                         last_tooltip = tooltip.clone();
-                        let _ = tray_for_poller.set_tooltip(&tooltip);
+                        let _ = tray_for_poller.set_tooltip(Some(&tooltip));
                     }
                 }
             });
