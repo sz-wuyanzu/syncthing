@@ -6,10 +6,10 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 #[cfg(unix)]
@@ -21,11 +21,11 @@ use quick_xml::de::from_str;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::{
-    AppHandle, Manager, RunEvent, State, WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, State, WindowEvent,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
-use tauri::image::Image;
+use tauri::{LogicalSize, image::Image};
 use tauri_plugin_dialog::DialogExt;
 use url::Url;
 
@@ -35,23 +35,10 @@ const DEFAULT_GUI_URL: &str = "http://127.0.0.1:8384/";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PORT_ATTEMPTS: usize = 3;
 const API_TIMEOUT: Duration = Duration::from_secs(3);
-const STATUS_PANEL_WIDTH: f64 = 340.0;
-const STATUS_PANEL_HEIGHT: f64 = 410.0;
-
-/// Milliseconds since the Unix epoch of the last left-click on the tray icon.
-/// Clicking the tray icon also takes focus away from the status panel, so the
-/// focus-loss handler uses this to tell "user clicked the tray icon to close
-/// the panel" apart from "user clicked somewhere else": in the first case the
-/// click handler itself hides the panel, and hiding it first would make the
-/// toggle immediately reopen it.
-static LAST_TRAY_CLICK_MS: AtomicU64 = AtomicU64::new(0);
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
+const COMPACT_PANEL_WIDTH: f64 = 72.0;
+const COMPACT_PANEL_HEIGHT: f64 = 72.0;
+const EXPANDED_PANEL_WIDTH: f64 = 340.0;
+const EXPANDED_PANEL_HEIGHT: f64 = 410.0;
 
 #[derive(Clone, Default)]
 struct DesktopState {
@@ -339,6 +326,53 @@ fn hide_status_panel(app: AppHandle) {
 #[tauri::command]
 fn toggle_floating_panel(app: AppHandle) {
     toggle_status_panel(&app, None);
+}
+
+#[tauri::command]
+fn start_status_panel_drag(app: AppHandle) -> Result<(), String> {
+    let panel = app
+        .get_webview_window("status-panel")
+        .ok_or_else(|| "Status panel is unavailable".to_string())?;
+    panel
+        .start_dragging()
+        .map_err(|error| format!("Could not start status panel drag: {error}"))
+}
+
+#[tauri::command]
+fn resize_status_panel(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+    let panel = app
+        .get_webview_window("status-panel")
+        .ok_or_else(|| "Status panel is unavailable".to_string())?;
+    let width = width.clamp(280.0, 460.0);
+    let height = height.clamp(120.0, 640.0);
+    panel
+        .set_size(LogicalSize::new(width, height))
+        .map_err(|error| format!("Could not resize status panel: {error}"))?;
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    if let Ok(position) = panel.outer_position() {
+        snap_panel_position(&panel, position, true);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_status_panel_mode(app: AppHandle, compact: bool) -> Result<(), String> {
+    let panel = app
+        .get_webview_window("status-panel")
+        .ok_or_else(|| "Status panel is unavailable".to_string())?;
+    let size = if compact {
+        LogicalSize::new(COMPACT_PANEL_WIDTH, COMPACT_PANEL_HEIGHT)
+    } else {
+        LogicalSize::new(EXPANDED_PANEL_WIDTH, EXPANDED_PANEL_HEIGHT)
+    };
+    panel
+        .set_size(size)
+        .map_err(|error| format!("Could not resize status panel: {error}"))?;
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    if let Ok(position) = panel.outer_position() {
+        snap_panel_position(&panel, position, true);
+    }
+    Ok(())
 }
 
 fn connect_to_syncthing_inner(
@@ -1775,14 +1809,18 @@ fn toggle_status_panel(app: &AppHandle, anchor: Option<tauri::Rect>) {
 /// picked from whether the icon is in the upper or lower half of its
 /// monitor. `anchor` is the tray icon rectangle from `TrayIconEvent::Click`,
 /// in physical pixels and absolute screen coordinates; without one (toggled
-/// from the tray menu) it falls back to a corner of the primary monitor.
+/// from the main window) it docks to the right edge, vertically centred like
+/// a desktop sidebar widget.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn position_panel_near_tray(window: &tauri::WebviewWindow, anchor: Option<tauri::Rect>) {
     use tauri::PhysicalPosition;
 
     let scale = window.scale_factor().unwrap_or(1.0);
-    let panel_width = STATUS_PANEL_WIDTH * scale;
-    let panel_height = STATUS_PANEL_HEIGHT * scale;
+    let Ok(panel_size) = window.inner_size() else {
+        return;
+    };
+    let panel_width = panel_size.width as f64;
+    let panel_height = panel_size.height as f64;
     let gap = 8.0 * scale;
 
     let anchor_physical = anchor.map(|rect| {
@@ -1827,10 +1865,7 @@ fn position_panel_near_tray(window: &tauri::WebviewWindow, anchor: Option<tauri:
             (x, y)
         }
         None => {
-            #[cfg(target_os = "windows")]
-            let fallback_y = monitor_bottom - panel_height - gap;
-            #[cfg(not(target_os = "windows"))]
-            let fallback_y = monitor_top + 28.0 * scale;
+            let fallback_y = monitor_top + (monitor_bottom - monitor_top - panel_height) / 2.0;
             (monitor_right - panel_width - gap, fallback_y)
         }
     };
@@ -1844,6 +1879,68 @@ fn position_panel_near_tray(window: &tauri::WebviewWindow, anchor: Option<tauri:
     );
     if let Err(error) = window.set_position(PhysicalPosition::new(x as i32, y as i32)) {
         eprintln!("Could not position status panel: {error}");
+    }
+}
+
+/// Keep the floating panel close to the monitor's left or right edge after a
+/// drag, the same way desktop sidebar widgets do. Only horizontal edges are
+/// snapped: snapping to the bottom would tuck the panel under the Windows
+/// taskbar or the macOS Dock.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn snap_panel_position(
+    window: &tauri::WebviewWindow,
+    position: tauri::PhysicalPosition<i32>,
+    force: bool,
+) {
+    use tauri::PhysicalPosition;
+
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    let width = size.width as f64;
+    let height = size.height as f64;
+    let centre_x = position.x as f64 + width / 2.0;
+    let centre_y = position.y as f64 + height / 2.0;
+    let Some(monitor) = window
+        .monitor_from_point(centre_x, centre_y)
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+    else {
+        return;
+    };
+
+    let monitor_position = monitor.position();
+    let monitor_size = monitor.size();
+    let left = monitor_position.x as f64;
+    let top = monitor_position.y as f64;
+    let right = left + monitor_size.width as f64;
+    let bottom = top + monitor_size.height as f64;
+    let gap = 8.0;
+    let threshold = 96.0;
+
+    let mut x = position.x as f64;
+    let distance_left = (x - left).abs();
+    let distance_right = (right - (x + width)).abs();
+    if force {
+        x = if distance_left <= distance_right {
+            left + gap
+        } else {
+            right - width - gap
+        };
+    } else if distance_left <= threshold {
+        x = left + gap;
+    } else if distance_right <= threshold {
+        x = right - width - gap;
+    }
+    let y = (position.y as f64).clamp(
+        top + gap,
+        (bottom - height - gap).max(top + gap),
+    );
+
+    let snapped = (x.round() as i32, y.round() as i32);
+    if snapped != (position.x, position.y) {
+        let _ = window.set_position(PhysicalPosition::new(snapped.0, snapped.1));
     }
 }
 
@@ -2107,7 +2204,7 @@ pub fn run() {
                     WebviewUrl::App("panel.html".into()),
                 )
                 .title("Syncthing 同步状态")
-                .inner_size(STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT)
+                .inner_size(COMPACT_PANEL_WIDTH, COMPACT_PANEL_HEIGHT)
                 .resizable(false)
                 .decorations(false)
                 .transparent(true)
@@ -2128,22 +2225,20 @@ pub fn run() {
                         Some(12.0),
                     )?;
                 }
-                let panel_to_hide = panel.clone();
-                panel.on_window_event(move |event| {
-                    if let WindowEvent::Focused(false) = event {
-                        // A tray-icon click also defocuses the panel. If that
-                        // click just happened, the click handler is about to
-                        // toggle the panel itself; hiding here first would
-                        // make the toggle reopen it instead of closing it.
-                        if now_ms().saturating_sub(LAST_TRAY_CLICK_MS.load(Ordering::Relaxed))
-                            < 300
-                        {
-                            return;
-                        }
-                        if let Err(error) = panel_to_hide.hide() {
-                            eprintln!("Could not hide status panel: {error}");
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                let panel_for_moved = panel.clone();
+                let panel_to_blur = panel.clone();
+                panel.on_window_event(move |event| match event {
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    WindowEvent::Moved(position) => {
+                        snap_panel_position(&panel_for_moved, *position, false)
+                    }
+                    WindowEvent::Focused(false) => {
+                        if let Err(error) = panel_to_blur.emit("panel-blur", ()) {
+                            eprintln!("Could not notify status panel: {error}");
                         }
                     }
+                    _ => {}
                 });
             }
 
@@ -2160,13 +2255,13 @@ pub fn run() {
                 .cloned()
                 .ok_or_else(|| std::io::Error::other("Syncthing window icon is missing"))?;
 
-            // Left click toggles the status panel on macOS and Windows and
-            // the menu stays on right click. The builder default is
-            // menu-on-left-click, which would swallow the click on Windows.
+            // Left click opens the main dashboard; the context menu stays on
+            // right click. The builder default is menu-on-left-click, which
+            // would swallow the click on Windows.
             let tray = TrayIconBuilder::with_id("main").show_menu_on_left_click(false);
             let tray_icon = tray
                 .icon(icon)
-                .tooltip("Syncthing Desktop — 点击查看同步状态")
+                .tooltip("Syncthing Desktop — 点击打开控制台")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "open" => show_window(app),
@@ -2180,20 +2275,10 @@ pub fn run() {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
-                        rect,
                         ..
                     } = event
                     {
-                        #[cfg(any(target_os = "macos", target_os = "windows"))]
-                        {
-                            LAST_TRAY_CLICK_MS.store(now_ms(), Ordering::Relaxed);
-                            toggle_status_panel(tray.app_handle(), Some(rect));
-                        }
-                        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-                        {
-                            let _ = rect;
-                            show_window(tray.app_handle());
-                        }
+                        open_main_window(tray.app_handle().clone());
                     }
                 })
                 .build(app)?;
@@ -2285,6 +2370,9 @@ pub fn run() {
             open_main_window,
             hide_status_panel,
             toggle_floating_panel,
+            start_status_panel_drag,
+            resize_status_panel,
+            set_status_panel_mode,
             set_all_folders_paused,
             set_device_paused,
             set_folder_devices,
@@ -2299,11 +2387,15 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Syncthing Desktop");
     app.run(|app, event| {
-        if let RunEvent::ExitRequested { api, .. } = event {
+        if let RunEvent::ExitRequested { ref api, .. } = event {
             if !app.state::<DesktopState>().exiting.load(Ordering::SeqCst) {
                 api.prevent_exit();
                 quit_app(app);
             }
+        }
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Reopen { .. } = event {
+            open_main_window(app.app_handle().clone());
         }
     });
 }

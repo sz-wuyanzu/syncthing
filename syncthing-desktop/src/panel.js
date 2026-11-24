@@ -1,4 +1,6 @@
 const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
+
 const stateElement = document.querySelector("#state");
 const dotElement = document.querySelector("#status-dot");
 const downloadRateElement = document.querySelector("#download-rate");
@@ -10,6 +12,10 @@ const errorElement = document.querySelector("#error");
 const moreFilesElement = document.querySelector("#more-files");
 const toggleSyncButton = document.querySelector("#toggle-sync");
 
+const panelElement = document.querySelector("#panel");
+const compactLogoElement = document.querySelector("#compact-logo");
+const collapseButton = document.querySelector("#collapse-panel");
+
 const stateLabels = {
   syncing: "正在同步",
   scanning: "正在扫描",
@@ -20,6 +26,7 @@ const stateLabels = {
 
 let latestStatus;
 let refreshInProgress = false;
+let compact = true;
 
 function formatRate(bytesPerSecond) {
   const units = ["B/秒", "KB/秒", "MB/秒", "GB/秒"];
@@ -43,6 +50,40 @@ function formatSize(bytes) {
   }
   return `${value.toFixed(1)} ${units[unit]}`;
 }
+
+function setMode(nextCompact) {
+  if (compact === nextCompact) return;
+  window.clearTimeout(expandTimer);
+  window.clearTimeout(collapseTimer);
+  compact = nextCompact;
+  document.body.classList.toggle("is-compact", compact);
+  document.body.classList.toggle("is-expanded", !compact);
+  lastContentSize = null;
+  invoke("set_status_panel_mode", { compact }).catch((error) => {
+    console.error("Could not resize status panel:", error);
+  });
+  if (!compact) refresh();
+}
+
+const panelResizeObserver = new ResizeObserver(() => {
+  if (compact || dragging) return;
+  const width = Math.ceil(panelElement.scrollWidth);
+  const height = Math.ceil(panelElement.scrollHeight);
+  if (!width || !height) return;
+  if (
+    lastContentSize &&
+    Math.abs(lastContentSize.width - width) < 3 &&
+    Math.abs(lastContentSize.height - height) < 3
+  ) {
+    return;
+  }
+  lastContentSize = { width, height };
+  invoke("resize_status_panel", { width, height }).catch((error) => {
+    console.error("Could not auto-size status panel:", error);
+    lastContentSize = null;
+  });
+});
+panelResizeObserver.observe(panelElement);
 
 function renderFiles(files) {
   filesElement.replaceChildren();
@@ -72,7 +113,8 @@ function renderFiles(files) {
 
 function render(status) {
   latestStatus = status;
-  stateElement.textContent = stateLabels[status.state] ?? `同步状态：${status.state}`;
+  const label = stateLabels[status.state] ?? `同步状态：${status.state}`;
+  stateElement.textContent = label;
   dotElement.dataset.state = status.state;
   downloadRateElement.textContent = formatRate(status.downloadRate);
   uploadRateElement.textContent = formatRate(status.uploadRate);
@@ -86,13 +128,13 @@ function render(status) {
 }
 
 async function refresh() {
-  // The panel window stays alive while hidden, so don't poll Syncthing
-  // when nobody can see the result.
-  if (refreshInProgress || !document.hasFocus()) return;
+  // The compact badge shows no details; poll only while the panel is open.
+  if (refreshInProgress || compact) return;
   refreshInProgress = true;
   try {
     render(await invoke("get_sync_status"));
   } catch (error) {
+    const message = String(error);
     stateElement.textContent = "同步状态暂不可用";
     dotElement.dataset.state = "error";
     downloadRateElement.textContent = "—";
@@ -100,13 +142,82 @@ async function refresh() {
     renderFiles([]);
     moreFilesElement.hidden = true;
     toggleSyncButton.disabled = true;
-    errorElement.textContent = String(error);
+    errorElement.textContent = message;
     errorElement.hidden = false;
   } finally {
     refreshInProgress = false;
   }
 }
 
+let dragStart = null;
+let dragging = false;
+let justDragged = false;
+let expandTimer = null;
+let collapseTimer = null;
+let lastContentSize = null;
+
+compactLogoElement.addEventListener("mouseenter", () => {
+  window.clearTimeout(expandTimer);
+  expandTimer = window.setTimeout(() => {
+    if (!dragging) setMode(false);
+  }, 220);
+});
+compactLogoElement.addEventListener("mouseleave", () => {
+  window.clearTimeout(expandTimer);
+});
+panelElement.addEventListener("mouseenter", () => {
+  window.clearTimeout(collapseTimer);
+});
+panelElement.addEventListener("mouseleave", () => {
+  window.clearTimeout(collapseTimer);
+  collapseTimer = window.setTimeout(() => {
+    if (!dragging) setMode(true);
+  }, 200);
+});
+
+compactLogoElement.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
+  window.clearTimeout(expandTimer);
+  dragStart = { x: event.clientX, y: event.clientY };
+  dragging = false;
+  justDragged = false;
+});
+compactLogoElement.addEventListener("pointermove", (event) => {
+  if (dragging || !dragStart) return;
+  const distance = Math.hypot(event.clientX - dragStart.x, event.clientY - dragStart.y);
+  if (distance < 4) return;
+  dragging = true;
+  justDragged = true;
+  invoke("start_status_panel_drag").catch((error) => {
+    console.error("Could not start status panel drag:", error);
+  });
+});
+compactLogoElement.addEventListener("pointerup", () => {
+  justDragged = dragging;
+  if (!dragging && compact) setMode(false);
+  dragStart = null;
+  dragging = false;
+  window.setTimeout(() => {
+    justDragged = false;
+  }, 300);
+});
+compactLogoElement.addEventListener("click", () => {
+  if (justDragged) {
+    justDragged = false;
+    return;
+  }
+  setMode(false);
+});
+document
+  .querySelector("#panel-drag-handle")
+  .addEventListener("pointerdown", (event) => {
+    if (event.button === 0) {
+      invoke("start_status_panel_drag").catch((error) => {
+        console.error("Could not start status panel drag:", error);
+      });
+    }
+  });
+collapseButton.addEventListener("click", () => setMode(true));
 document.querySelector("#close").addEventListener("click", () => invoke("hide_status_panel"));
 document.querySelector("#open-main").addEventListener("click", () => invoke("open_main_window"));
 toggleSyncButton.addEventListener("click", async () => {
@@ -122,7 +233,12 @@ toggleSyncButton.addEventListener("click", async () => {
   }
 });
 window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") invoke("hide_status_panel");
+  if (event.key !== "Escape") return;
+  if (compact) invoke("hide_status_panel");
+  else setMode(true);
+});
+listen("panel-blur", () => {
+  if (!compact) setMode(true);
 });
 // Refresh the moment the panel is shown instead of serving up to 5s-old
 // data from the last time it was open.

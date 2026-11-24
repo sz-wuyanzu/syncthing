@@ -9,16 +9,25 @@
     <script type="module" src="/panel.js" defer></script>
   </head>
   <body>
-    <main class="panel">
+    <main class="panel" id="panel">
+      <section class="compact-bar" id="compact-bar">
+        <button class="compact-logo" id="compact-logo" type="button" aria-label="展开状态面板" title="拖拽移动，点击展开">
+          <img src="/syncthing-logo.png" alt="Syncthing" />
+        </button>
+      </section>
+
       <header class="header">
-        <div class="brand">
+        <div class="brand" id="panel-drag-handle" data-tauri-drag-region>
           <div class="brand-mark" aria-hidden="true">S</div>
           <div>
             <p class="eyebrow">SYNCTHING</p>
             <h1>同步状态</h1>
           </div>
         </div>
-        <button class="icon-button" id="close" type="button" aria-label="关闭面板">×</button>
+        <div class="header-actions">
+          <button class="icon-button" id="collapse-panel" type="button" aria-label="收起面板">—</button>
+          <button class="icon-button" id="close" type="button" aria-label="关闭面板">×</button>
+        </div>
       </header>
 
       <section class="summary" aria-live="polite">
