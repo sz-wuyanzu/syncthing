@@ -336,6 +336,11 @@ fn hide_status_panel(app: AppHandle) {
     }
 }
 
+#[tauri::command]
+fn toggle_floating_panel(app: AppHandle) {
+    toggle_status_panel(&app, None);
+}
+
 fn connect_to_syncthing_inner(
     session: Arc<Mutex<DesktopSession>>,
     log_dir: PathBuf,
@@ -2279,6 +2284,7 @@ pub fn run() {
             open_full_management,
             open_main_window,
             hide_status_panel,
+            toggle_floating_panel,
             set_all_folders_paused,
             set_device_paused,
             set_folder_devices,

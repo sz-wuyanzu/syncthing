@@ -24,6 +24,7 @@ const elements = {
   notice: document.querySelector("#notice"),
   lastUpdated: document.querySelector("#last-updated"),
   serviceUrl: document.querySelector("#service-url"),
+  statusPanel: document.querySelector("#status-panel"),
   refresh: document.querySelector("#refresh"),
   fullManagement: document.querySelector("#full-management"),
   serviceAction: document.querySelector("#service-action"),
@@ -636,6 +637,9 @@ async function loadNetworkSettings() {
 
 window.addEventListener("DOMContentLoaded", () => {
   elements.retry.addEventListener("click", connect);
+  elements.statusPanel.addEventListener("click", () => runAction(async () => {
+    await invoke("toggle_floating_panel");
+  }));
   elements.refresh.addEventListener("click", refreshDashboard);
   elements.fullManagement.addEventListener("click", () => runAction(async () => {
     await invoke("open_full_management");
